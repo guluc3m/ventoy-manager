@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -60,15 +59,15 @@ func DiscoverFrom(bases []string) []Drive {
 
 // describeDrive fills in capacity, free space and ISO counts for one drive.
 func describeDrive(mount, dir string) (Drive, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(mount, &st); err != nil {
+	s, err := freeSpace(mount)
+	if err != nil {
 		return Drive{}, err
 	}
 	return Drive{
 		Mount: mount,
 		Dir:   dir,
-		Size:  uint64(st.Bsize) * st.Blocks,
-		Free:  uint64(st.Bsize) * st.Bavail,
+		Size:  uint64(s.Total),
+		Free:  uint64(s.Free),
 		ISOs:  countISOs(mount),
 	}, nil
 }

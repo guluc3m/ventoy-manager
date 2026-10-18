@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"syscall"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -13,15 +12,6 @@ import (
 // the ISOs. Free counts what unprivileged writes can actually use.
 type Space struct {
 	Total, Free int64
-}
-
-// freeSpace stats the filesystem containing path.
-func freeSpace(path string) (Space, error) {
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(path, &st); err != nil {
-		return Space{}, err
-	}
-	return Space{Total: int64(st.Blocks) * int64(st.Bsize), Free: int64(st.Bavail) * int64(st.Bsize)}, nil
 }
 
 // fileSize reports the size of an existing file, or zero when it is missing.
