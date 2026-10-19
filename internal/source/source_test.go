@@ -14,7 +14,7 @@ import (
 
 // TestCompareVersions verifies numeric, rather than lexical, comparison.
 func TestCompareVersions(t *testing.T) {
-	if compareVersions("ubuntu-26.04.10-desktop.iso", "ubuntu-26.04.2-desktop.iso") <= 0 {
+	if CompareVersions("ubuntu-26.04.10-desktop.iso", "ubuntu-26.04.2-desktop.iso") <= 0 {
 		t.Fatal("did not compare numeric components")
 	}
 }
@@ -59,7 +59,7 @@ func TestLatestUbuntuPrefersPointRelease(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	current := iso.Image{Family: "Ubuntu", Version: "24.04"}
+	current := iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Version: "24.04"}
 	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
@@ -69,6 +69,28 @@ func TestLatestUbuntuPrefersPointRelease(t *testing.T) {
 	}
 	if !strings.Contains(got.URL, "ubuntu-26.04.1-desktop-amd64.iso") {
 		t.Errorf("URL = %q, want point-release ISO", got.URL)
+	}
+}
+
+// TestLatestUsesCatalogForDirectListing verifies distributions whose releases
+// live directly at the catalog index (Debian) resolve through the same
+// catalog entry as release-directory distributions.
+func TestLatestUsesCatalogForDirectListing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<a href="debian-12.5.0-amd64-DVD-1.iso">old</a><a href="debian-13.1.0-amd64-DVD-1.iso">new</a>`))
+	}))
+	defer server.Close()
+
+	current := iso.Image{Family: "Debian", Edition: "DVD", Version: "12.5.0"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "13.1.0"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if !strings.Contains(got.URL, "debian-13.1.0-amd64-DVD-1.iso") {
+		t.Errorf("URL = %q, want newest direct-listing ISO", got.URL)
 	}
 }
 

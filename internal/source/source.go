@@ -30,108 +30,70 @@ type Candidate struct {
 // Resolver fetches official distribution release pages.
 type Resolver struct {
 	Client *http.Client
-	// ubuntuRoot points at the Ubuntu release index; tests may override it.
-	ubuntuRoot string
+	// testRoot, when set, replaces a catalog entry's release index; tests use
+	// it to point resolution at a fake mirror.
+	testRoot string
 }
 
 // New creates a resolver with a bounded HTTP timeout.
 func New() *Resolver {
-	return &Resolver{Client: &http.Client{Timeout: 30 * time.Second}, ubuntuRoot: "https://releases.ubuntu.com/"}
+	return &Resolver{Client: &http.Client{Timeout: 30 * time.Second}}
 }
 
-// withTestRoot retargets the Ubuntu index; used by tests against fake mirrors.
+// withTestRoot retargets catalog resolution at a fake mirror for tests.
 func (r *Resolver) withTestRoot(root string) *Resolver {
-	r.ubuntuRoot = root
+	r.testRoot = root
 	return r
 }
 
-// Latest starts at each distro's release index, rather than an installed-version
-// URL, so it can discover new major releases as well as point releases.
+// Latest looks the installed image up in the built-in catalog and resolves its
+// newest release from the same entry that recognizes its filename. Resolution
+// starts at the distro's release index, rather than an installed-version URL,
+// so it can discover new major releases as well as point releases.
 func (r *Resolver) Latest(ctx context.Context, current iso.Image) (Candidate, error) {
-	switch current.Family {
-	case "Ubuntu":
-		return r.latestReleaseDirectory(ctx, r.ubuntuRoot, regexp.MustCompile(`^[0-9]{2}\.04(\.[0-9]+)?/$`), regexp.MustCompile(`^ubuntu-[0-9.]+-desktop-amd64\.iso$`))
-	case "Fedora":
-		return r.latestReleaseDirectory(ctx, "https://dl.fedoraproject.org/pub/fedora/linux/releases/", regexp.MustCompile(`^[0-9]+/$`), regexp.MustCompile(`^Fedora-Workstation-Live-[0-9.-]+\.x86_64\.iso$`), "Workstation/x86_64/iso/")
-	case "Linux Mint":
-		return r.latestReleaseDirectory(ctx, "https://mirrors.edge.kernel.org/linuxmint/stable/", regexp.MustCompile(`^[0-9]+\.[0-9]+/$`), regexp.MustCompile(`^linuxmint-[0-9.]+-cinnamon-64bit\.iso$`))
-	case "Tails":
-		return r.latestTails(ctx)
-	case "Manjaro":
-		return r.latestManjaro(ctx, current.Flavor)
-	case "openSUSE":
-		if current.Edition == "Tumbleweed" {
-			return r.latestListing(ctx, "https://download.opensuse.org/tumbleweed/iso/", regexp.MustCompile(`^openSUSE-Tumbleweed-DVD-x86_64-Snapshot[0-9]+-Media\.iso$`))
-		}
-		return r.latestReleaseDirectory(ctx, "https://download.opensuse.org/distribution/leap/", regexp.MustCompile(`^[12][0-9]\.[0-9]+/$`), regexp.MustCompile(`^Leap-[0-9.]+-offline-installer-x86_64\.install\.iso$`), "offline/")
-	case "Debian":
-		return r.latestListing(ctx, "https://cdimage.debian.org/debian-cd/current/amd64/iso-dvd/", regexp.MustCompile(`^debian-[0-9.]+-amd64-DVD-1\.iso$`))
-	case "Arch Linux":
-		return r.latestListing(ctx, "https://geo.mirror.pkgbuild.com/iso/latest/", regexp.MustCompile(`^archlinux-[0-9.]+-x86_64\.iso$`))
+	distribution, ok := iso.Lookup(current)
+	if !ok {
+		return Candidate{}, fmt.Errorf("no official source configured for %s (%s)", current.Family, current.Filename)
 	}
-	return Candidate{}, fmt.Errorf("no official source configured for %s (%s)", current.Family, current.Filename)
+	index := distribution.Index
+	if r.testRoot != "" {
+		index = r.testRoot
+	}
+	if distribution.Release == nil {
+		return r.latestListing(ctx, index, distribution)
+	}
+	return r.latestReleaseDirectory(ctx, index, distribution)
 }
 
 // latestReleaseDirectory finds the newest stable release directory then its ISO.
-func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, directory, filename *regexp.Regexp, suffix ...string) (Candidate, error) {
+func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, distribution iso.Distribution) (Candidate, error) {
 	links, err := r.links(ctx, root)
 	if err != nil {
 		return Candidate{}, err
 	}
 	var dirs []string
 	for _, link := range links {
-		if directory.MatchString(link) {
+		if distribution.Release.MatchString(link) {
 			dirs = append(dirs, link)
 		}
 	}
 	if len(dirs) == 0 {
 		return Candidate{}, fmt.Errorf("no release directories found at %s", root)
 	}
-	sort.Slice(dirs, func(i, j int) bool { return compareVersions(dirs[i], dirs[j]) < 0 })
-	return r.latestListing(ctx, root+dirs[len(dirs)-1]+strings.Join(suffix, ""), filename)
-}
-
-// latestTails follows the versioned directories used by the Tails stable mirror.
-func (r *Resolver) latestTails(ctx context.Context) (Candidate, error) {
-	const root = "https://download.tails.net/tails/stable/"
-	links, err := r.links(ctx, root)
-	if err != nil {
-		return Candidate{}, err
-	}
-	dirRE := regexp.MustCompile(`^tails-amd64-[0-9.]+/$`)
-	var dirs []string
-	for _, link := range links {
-		if dirRE.MatchString(link) {
-			dirs = append(dirs, link)
-		}
-	}
-	if len(dirs) == 0 {
-		return Candidate{}, fmt.Errorf("no Tails stable releases found")
-	}
-	sort.Slice(dirs, func(i, j int) bool { return compareVersions(dirs[i], dirs[j]) < 0 })
-	return r.latestListing(ctx, root+dirs[len(dirs)-1], regexp.MustCompile(`^tails-amd64-[0-9.]+\.iso$`))
-}
-
-// latestManjaro parses the official download page, which provides current ISO URLs.
-func (r *Resolver) latestManjaro(ctx context.Context, flavor string) (Candidate, error) {
-	if flavor != "KDE" {
-		return Candidate{}, fmt.Errorf("unsupported Manjaro flavour %q", flavor)
-	}
-	return r.latestListing(ctx, "https://manjaro.org/products/download/x86/", regexp.MustCompile(`^manjaro-kde-[0-9.]+-[0-9]+-linux[0-9]+\.iso$`))
+	sort.Slice(dirs, func(i, j int) bool { return CompareVersions(dirs[i], dirs[j]) < 0 })
+	return r.latestListing(ctx, root+dirs[len(dirs)-1]+distribution.Path, distribution)
 }
 
 // latestListing selects the greatest matching ISO version from an official page.
-func (r *Resolver) latestListing(ctx context.Context, index string, filename *regexp.Regexp) (Candidate, error) {
+func (r *Resolver) latestListing(ctx context.Context, index string, distribution iso.Distribution) (Candidate, error) {
 	links, err := r.links(ctx, index)
 	if err != nil {
 		return Candidate{}, err
 	}
 	var images []iso.Image
 	for _, link := range links {
-		if filename.MatchString(path.Base(link)) {
-			if image, ok := iso.Parse(path.Base(link)); ok {
-				images = append(images, image)
-			}
+		if image, ok := distribution.Parse(path.Base(link)); ok {
+			images = append(images, image)
 		}
 	}
 	if len(images) == 0 {
@@ -139,7 +101,7 @@ func (r *Resolver) latestListing(ctx context.Context, index string, filename *re
 	}
 	// Compare parsed versions, not filenames: trailing tokens like "amd64"
 	// would otherwise poison the numeric runs (26.04.1 vs 26.04 amd64).
-	sort.Slice(images, func(i, j int) bool { return compareVersions(images[i].Version, images[j].Version) < 0 })
+	sort.Slice(images, func(i, j int) bool { return CompareVersions(images[i].Version, images[j].Version) < 0 })
 	image := images[len(images)-1]
 	base, _ := url.Parse(index)
 	ref, _ := url.Parse(image.Filename)
@@ -235,8 +197,9 @@ func (r *Resolver) links(ctx context.Context, address string) ([]string, error) 
 	return links, nil
 }
 
-// compareVersions compares numeric runs in filenames and release directory names.
-func compareVersions(a, b string) int {
+// CompareVersions compares numeric runs in filenames, release directory names,
+// and version strings so version-based sorting is consistent everywhere.
+func CompareVersions(a, b string) int {
 	numbers := regexp.MustCompile(`[0-9]+`)
 	ax, bx := numbers.FindAllString(a, -1), numbers.FindAllString(b, -1)
 	for i := 0; i < len(ax) && i < len(bx); i++ {

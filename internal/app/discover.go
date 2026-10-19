@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/guluc3m/ventoy-updater/internal/space"
 )
 
 // Drive describes one mounted Ventoy data partition this tool can update.
@@ -59,7 +61,7 @@ func DiscoverFrom(bases []string) []Drive {
 
 // describeDrive fills in capacity, free space and ISO counts for one drive.
 func describeDrive(mount, dir string) (Drive, error) {
-	s, err := freeSpace(mount)
+	s, err := space.Free(mount)
 	if err != nil {
 		return Drive{}, err
 	}

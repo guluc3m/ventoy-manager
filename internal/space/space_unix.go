@@ -1,11 +1,11 @@
 //go:build unix
 
-package app
+package space
 
 import "syscall"
 
-// freeSpace stats the filesystem containing path.
-func freeSpace(path string) (Space, error) {
+// Free stats the filesystem containing path.
+func Free(path string) (Space, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
 		return Space{}, err

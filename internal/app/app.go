@@ -9,14 +9,17 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/guluc3m/ventoy-updater/internal/drive"
 	"github.com/guluc3m/ventoy-updater/internal/iso"
 	"github.com/guluc3m/ventoy-updater/internal/source"
+	"github.com/guluc3m/ventoy-updater/internal/space"
 	"github.com/guluc3m/ventoy-updater/internal/ventoy"
 )
 
@@ -32,6 +35,10 @@ const chunkProgress = 1 << 20 // one report per MiB
 // It is a variable only so tests can shrink the window; production never
 // changes it.
 var downloadIdleTimeout = 60 * time.Second
+
+// errCancelled reports that the user stopped a download batch partway through;
+// the interactive manager treats it specially instead of as a failure.
+var errCancelled = errors.New("download cancelled")
 
 // downloadClient fetches ISO bodies. Unlike the resolver's client it has no
 // overall timeout: a multi-gigabyte transfer legitimately outlives any fixed
@@ -56,18 +63,23 @@ var downloadClient = &http.Client{
 }
 
 type Update struct {
-	Current     iso.Image
+	Current     iso.Image // installed file, or an empty skeleton for catalog rows
 	Latest      source.Candidate
 	CurrentSize int64 // bytes of the ISO currently on the drive
 	LatestSize  int64 // bytes the replacement will occupy, zero when unknown
-	DeleteOld   bool
+	KeepOld     bool  // keep the installed ISO after a successful update
+	DeleteISO   bool  // free space by removing the ISO without replacing it
+	New         bool  // row comes from the download catalog, not the drive
+	Checked     bool  // Latest resolution already attempted
 	Selected    bool
 	Err         error
 }
 
-// Run discovers available updates and starts either the TUI or batch workflow.
-// When ventoyDir was not passed explicitly it is resolved from the mounted
-// drives, prompting the user if several qualify.
+// Run starts the ventoy-manager workflow: batch when --yes was passed, the
+// interactive manager otherwise. When ventoyDir was not passed explicitly it
+// is resolved from the mounted drives, prompting the user if several qualify.
+// The manager lists every ISO found on the drive but only checks upstream for
+// updates once the user asks for it.
 func Run(ventoyDir string, explicit, yes, keepOld bool) error {
 	if !explicit {
 		resolved, err := selectVentoyDir(yes)
@@ -89,25 +101,35 @@ func Run(ventoyDir string, explicit, yes, keepOld bool) error {
 	if err != nil {
 		return err
 	}
-	updates := resolveLatest(source.New(), images, keepOld)
-	if len(updates) == 0 {
-		fmt.Println("Everything recognised is already up to date.")
+	rows := diskRows(images, keepOld)
+	if len(rows) == 0 {
+		fmt.Println("No ISOs found under the Ventoy search root.")
 		return nil
 	}
-	space, err := freeSpace(root)
+	capacity, err := space.Free(root)
 	if err != nil {
 		return fmt.Errorf("measure free space: %w", err)
 	}
 	if yes {
-		for i := range updates {
-			updates[i].Selected = updates[i].Err == nil
+		checked := resolveLatest(source.New(), rows)
+		if len(checked) == 0 {
+			fmt.Println("Everything recognised is already up to date.")
+			return nil
 		}
-		add, freed := spaceEffect(updates)
-		fmt.Printf("Drive: %s free of %s; downloading %s, deleting %s, leaving %s.\n",
-			humanBytes(space.Free), humanBytes(space.Total), humanBytes(add), humanBytes(freed), humanBytes(space.Free+freed-add))
-		return apply(ventoyDir, updates, printDownload)
+		for i := range checked {
+			checked[i].Selected = checked[i].Err == nil
+		}
+		add, freed := spaceEffect(checked)
+		driveName := "Drive"
+		if label := drive.Label(root); label != "" {
+			driveName = "Drive (" + label + ")"
+		}
+		fmt.Printf("%s: %s free of %s; downloading %s, deleting %s, leaving %s.\n",
+			driveName, space.HumanBytes(capacity.Free), space.HumanBytes(capacity.Total),
+			space.HumanBytes(add), space.HumanBytes(freed), space.HumanBytes(capacity.Free+freed-add))
+		return apply(context.Background(), ventoyDir, root, checked, printDownload)
 	}
-	m := newModel(ventoyDir, updates, space)
+	m := newModel(ventoyDir, root, rows, capacity)
 	final, err := tea.NewProgram(m, tea.WithAltScreen()).Run()
 	if err != nil {
 		return err
@@ -140,7 +162,8 @@ func searchRoot(ventoyDir, searchRoot string) (string, error) {
 	return root, nil
 }
 
-// scanImages walks the search root and parses every recognised ISO.
+// scanImages walks the search root and parses every ISO; names too unusual to
+// match are still returned so the manager can list them, with an empty Family.
 func scanImages(root string) ([]iso.Image, error) {
 	var found []iso.Image
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -153,6 +176,8 @@ func scanImages(root string) ([]iso.Image, error) {
 		if strings.EqualFold(filepath.Ext(path), ".iso") {
 			if i, ok := iso.Parse(path); ok {
 				found = append(found, i)
+			} else {
+				found = append(found, iso.Image{Path: path, Filename: filepath.Base(path)})
 			}
 		}
 		return nil
@@ -160,24 +185,79 @@ func scanImages(root string) ([]iso.Image, error) {
 	return found, err
 }
 
-// resolveLatest checks each image against upstream, redrawing a one-line
-// progress bar as it goes, and keeps only rows needing attention.
-func resolveLatest(r *source.Resolver, images []iso.Image, keepOld bool) []Update {
-	if len(images) > 0 {
-		fmt.Println(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(
-			"Checking %d installed ISO%s for updates…", len(images), plural(len(images)))))
+// diskRows builds the manager rows from the ISOs found on the drive, sorted so
+// recognised distributions come first with their newest versions on top and
+// unrecognized files list last.
+func diskRows(images []iso.Image, keepOld bool) []Update {
+	rows := make([]Update, 0, len(images))
+	for _, cur := range images {
+		rows = append(rows, Update{
+			Current:     cur,
+			CurrentSize: fileSize(cur.Path),
+			KeepOld:     keepOld,
+		})
 	}
-	updates := make([]Update, 0, len(images))
-	for i, cur := range images {
-		printProgress(i, len(images), cur.DisplayName())
-		next, err := r.Latest(context.Background(), cur)
-		u := Update{Current: cur, Latest: next, CurrentSize: fileSize(cur.Path), LatestSize: next.Size, DeleteOld: !keepOld, Err: err}
-		if err == nil && next.Image.Filename == cur.Filename {
+	sortRows(rows)
+	return rows
+}
+
+// recognizedSorting orders recognised distributions by family and, within a
+// family, by newest version first.
+func recognizedSorting(a, b Update) bool {
+	if a.Current.Family != b.Current.Family {
+		return a.Current.Family < b.Current.Family
+	}
+	if v := source.CompareVersions(a.Current.Version, b.Current.Version); v != 0 {
+		return v > 0
+	}
+	return a.Current.Filename < b.Current.Filename
+}
+
+// sortRows puts recognized ISOs ahead of unrecognized files, deduplicates
+// catalog rows whose candidate is already installed, and is stable otherwise.
+func sortRows(rows []Update) {
+	sort.SliceStable(rows, func(i, j int) bool {
+		aU, bU := rows[i].Current.Family != "", rows[j].Current.Family != ""
+		if aU != bU {
+			return aU
+		}
+		if !aU {
+			return false
+		}
+		return recognizedSorting(rows[i], rows[j])
+	})
+}
+
+// resolveLatest checks each recognized row against upstream, redrawing a
+// one-line progress bar as it goes, and keeps only rows needing attention.
+// It is the check phase of the --yes batch path; the interactive manager
+// checks on demand instead.
+func resolveLatest(r *source.Resolver, rows []Update) []Update {
+	recognized := 0
+	for i := range rows {
+		if rows[i].Current.Family != "" {
+			recognized++
+		}
+	}
+	if recognized > 0 {
+		fmt.Println(lipgloss.NewStyle().Faint(true).Render(fmt.Sprintf(
+			"Checking %d installed ISO%s for updates…", recognized, plural(recognized))))
+	}
+	var updates []Update
+	for i, cur := range rows {
+		if cur.Current.Family == "" {
 			continue
 		}
-		updates = append(updates, u)
+		printProgress(i, len(rows), cur.Current.DisplayName())
+		candidate, err := r.Latest(context.Background(), cur.Current)
+		rows[i].Latest, rows[i].CurrentSize = candidate, fileSize(cur.Current.Path)
+		rows[i].LatestSize, rows[i].Checked, rows[i].Err = candidate.Size, true, err
+		if err == nil && candidate.Image.Filename == cur.Current.Filename {
+			continue
+		}
+		updates = append(updates, rows[i])
 	}
-	printProgress(len(images), len(images), "")
+	printProgress(len(rows), len(rows), "")
 	fmt.Println()
 	return updates
 }
@@ -194,58 +274,80 @@ func printProgress(done, total int, name string) {
 	fmt.Printf("\r  %s %d/%d %s\x1b[K", bar, done, total, truncate(name, 44))
 }
 
-// truncate shortens a filename so the progress line never wraps.
-func truncate(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
+// apply downloads selected ISOs, removes delete-marked and superseded images,
+// and saves the refreshed menu aliases. root is the search-root directory that
+// catalog downloads land in.
+func apply(ctx context.Context, ventoyDir, root string, rows []Update, progress Progress) error {
+	if ctx.Err() != nil {
+		return errCancelled
 	}
-	return string(runes[:max-1]) + "…"
-}
-
-// apply downloads selected updates, optionally removes old images, and saves aliases.
-func apply(ventoyDir string, updates []Update, progress Progress) error {
 	cfg, err := ventoy.Load(ventoyDir)
 	if err != nil {
 		return err
 	}
-	for _, u := range updates {
-		if !u.Selected || u.Err != nil {
+	for _, u := range rows {
+		if ctx.Err() != nil {
+			return errCancelled
+		}
+		if u.DeleteISO {
+			if u.Current.Path != "" && fileSize(u.Current.Path) > 0 {
+				if err := os.Remove(u.Current.Path); err != nil {
+					return fmt.Errorf("remove %s: %w", u.Current.Filename, err)
+				}
+			}
 			continue
 		}
-		target := filepath.Join(filepath.Dir(u.Current.Path), u.Latest.Image.Filename)
-		if err := download(u.Latest.URL, target, func(done, total int64) {
+		if !u.Selected || u.Err != nil || u.Latest.Image.Filename == "" {
+			continue
+		}
+		var target string
+		if u.New {
+			target = filepath.Join(root, u.Latest.Image.Filename)
+		} else {
+			target = filepath.Join(filepath.Dir(u.Current.Path), u.Latest.Image.Filename)
+		}
+		if err := download(ctx, u.Latest.URL, target, func(done, total int64) {
 			if progress != nil {
 				progress(u.Latest.Image.Filename, done, total)
 			}
 		}); err != nil {
+			if errors.Is(ctx.Err(), errCancelled) || ctx.Err() != nil {
+				return errCancelled
+			}
 			return err
 		}
-		if u.DeleteOld {
+		if !u.KeepOld && u.Current.Path != "" {
 			if err := os.Remove(u.Current.Path); err != nil {
 				return fmt.Errorf("remove %s: %w", u.Current.Filename, err)
 			}
 		}
-		cfg.SetAliasForPath(filepath.ToSlash(strings.TrimPrefix(u.Current.Path, filepath.Dir(ventoyDir)+string(os.PathSeparator))), u.Latest.Image.CanonicalName())
+		if u.Current.Path != "" {
+			cfg.SetAliasForPath(filepath.ToSlash(strings.TrimPrefix(u.Current.Path, filepath.Dir(ventoyDir)+string(os.PathSeparator))), u.Latest.Image.CanonicalName())
+		}
 	}
 	return cfg.Save(ventoyDir)
 }
 
 // download streams url into a temporary sibling file before atomically renaming
-// it, reporting byte progress at most once per MiB and once at completion.
-func download(url, target string, progress func(done, total int64)) error {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// it, reporting byte progress at most once per MiB and once at completion. A
+// cancelled context aborts with errCancelled; the context also feeds the idle
+// watchdog, which aborts transfers that go quiet on their own.
+func download(ctx context.Context, url, target string, progress func(done, total int64)) error {
+	watch, cancelWatch := context.WithCancel(ctx)
+	defer cancelWatch()
+	req, err := http.NewRequestWithContext(watch, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
 	// Cancel the request if the body goes quiet for downloadIdleTimeout; each
 	// successful read restarts the timer, so slow-but-progressing links survive.
-	stalled := time.AfterFunc(downloadIdleTimeout, cancel)
+	stalled := time.AfterFunc(downloadIdleTimeout, cancelWatch)
 	defer stalled.Stop()
 	resp, err := downloadClient.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return errCancelled // user stop; a raw wrapped error hides it
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -283,9 +385,12 @@ func download(url, target string, progress func(done, total int64)) error {
 		}
 		if readErr != nil {
 			tmp.Close()
-			// ctx is only ever cancelled by the idle watchdog before this
-			// point, so a cancellation means the transfer went quiet.
+			// ctx is cancelled either by the user or by the idle watchdog;
+			// a watchdog-only cancellation means the transfer went quiet.
 			if ctx.Err() != nil {
+				return errCancelled
+			}
+			if watch.Err() != nil {
 				return fmt.Errorf("download stalled: no data received for %s", downloadIdleTimeout)
 			}
 			return readErr
@@ -314,9 +419,9 @@ func printDownload(filename string, done, total int64) {
 		percent = fmt.Sprintf(" %3d%%", done*100/total)
 	}
 	styled := lipgloss.NewStyle().Foreground(lipgloss.Color("86")).Render(bar)
-	sizes := " " + humanBytes(done)
+	sizes := " " + space.HumanBytes(done)
 	if total > 0 {
-		sizes += " / " + humanBytes(total)
+		sizes += " / " + space.HumanBytes(total)
 	}
 	fmt.Printf("\r  %s%s %s%s\x1b[K", styled, percent, truncate(filename, 36), sizes)
 	if total > 0 && done >= total {

@@ -34,9 +34,9 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          name="ventoy-updater-${GOOS}-${GOARCH}"
+          name="ventoy-manager-${GOOS}-${GOARCH}"
           if [ "$GOOS" = windows ]; then name+='.exe'; fi
-          go build -trimpath -ldflags "-s -w" -o "dist/$name" ./cmd/ventoy-updater
+          go build -trimpath -ldflags "-s -w" -o "dist/$name" ./cmd/ventoy-manager
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.goos }}-${{ matrix.goarch }}

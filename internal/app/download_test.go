@@ -2,6 +2,8 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,7 +48,7 @@ func TestDownloadOutlastsIdleWindow(t *testing.T) {
 	dir := t.TempDir()
 	target := dir + "/image.iso"
 	var lastDone, lastTotal int64
-	err := download(server.URL, target, func(done, total int64) { lastDone, lastTotal = done, total })
+	err := download(context.Background(), server.URL, target, func(done, total int64) { lastDone, lastTotal = done, total })
 	if err != nil {
 		t.Fatalf("download returned %v, want nil", err)
 	}
@@ -69,8 +71,25 @@ func TestDownloadOutlastsIdleWindow(t *testing.T) {
 	}
 }
 
+// TestDownloadHonoursCancelledContext verifies a cancelled context aborts
+// with errCancelled rather than a raw wrapped error; the request never even
+// starts, so the server handler stays unreachable.
+func TestDownloadHonoursCancelledContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unreachable", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := download(ctx, server.URL, t.TempDir()+"/image.iso", nil); !errors.Is(err, errCancelled) {
+		t.Errorf("download returned %v, want errCancelled", err)
+	}
+}
+
 // TestDownloadStopsWhenBodyStalls verifies a connection that goes quiet is
 // reported instead of hanging forever.
+
 func TestDownloadStopsWhenBodyStalls(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1024")
@@ -83,7 +102,7 @@ func TestDownloadStopsWhenBodyStalls(t *testing.T) {
 	shortIdle(t, 40*time.Millisecond)
 
 	target := t.TempDir() + "/image.iso"
-	err := download(server.URL, target, nil)
+	err := download(context.Background(), server.URL, target, nil)
 	if err == nil || !strings.Contains(err.Error(), "stalled") {
 		t.Fatalf("download error = %v, want a stalled-download error", err)
 	}
@@ -101,7 +120,7 @@ func TestDownloadReportsHTTPError(t *testing.T) {
 	defer server.Close()
 
 	dir := t.TempDir()
-	err := download(server.URL, dir+"/image.iso", nil)
+	err := download(context.Background(), server.URL, dir+"/image.iso", nil)
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("download error = %v, want a 404 report", err)
 	}

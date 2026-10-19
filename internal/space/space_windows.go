@@ -1,11 +1,11 @@
 //go:build windows
 
-package app
+package space
 
 import "golang.org/x/sys/windows"
 
-// freeSpace queries the volume containing path with GetDiskFreeSpaceEx.
-func freeSpace(path string) (Space, error) {
+// Free queries the volume containing path with GetDiskFreeSpaceEx.
+func Free(path string) (Space, error) {
 	var free, total, _ uint64
 	pointer, err := windows.UTF16PtrFromString(path)
 	if err != nil {

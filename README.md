@@ -1,26 +1,30 @@
-# ventoy-updater
+# ventoy-manager
 
-An interactive terminal updater for Linux ISOs on a Ventoy drive. It discovers recognised images, finds each distribution's latest published release from its official release index, downloads approved replacements, optionally deletes the old ISO, and refreshes matching `menu_alias` entries in `ventoy/ventoy.json`.
+An interactive terminal manager for Linux ISOs on a Ventoy drive (updating, downloading, and deleting). Also refreshes matching `menu_alias` entries in `ventoy/ventoy.json`.
+
+
+## Supported images
+
+- Ubuntu Desktop LTS
+- Fedora Workstation
+- Debian DVD
+- Linux Mint Cinnamon
+- Tails OS
+- Arch Linux
+- openSUSE Tumbleweed/Leap
+- Manjaro KDE
 
 
 ## Build and run
 
 ```sh
-go build ./cmd/ventoy-updater
-ventoy-updater
+go build ./cmd/ventoy-manager
+ventoy-manager
 ```
 
-Pass `--ventoy-dir` to specify the drive you intend to update. When the flag is omitted, the updater looks for drives with a `ventoy/ventoy.json` configuration under `/run/media/$USER` and `/media/$USER`.
+Pass `--ventoy-dir` to specify the drive you intend to manage. When the flag is omitted, the manager looks for drives with a `ventoy/ventoy.json` configuration under `/run/media/$USER` and `/media/$USER`.
 
 
-## Supported images
+### Batch mode
 
-- Ubuntu Desktop
-- Fedora Workstation
-- Debian
-- Linux Mint Cinnamon
-- Tails OS
-- Arch Linux
-- OpenSUSE Tumbleweed/Leap
-- Manjaro KDE
-
+`ventoy-manager --yes` skips the UI: it checks upstream, downloads every available update and deletes the replaced ISOs. `--keep-old` flips that to keep the old files, pre-selecting the keep column.
