@@ -22,7 +22,7 @@ go build ./cmd/ventoy-manager
 ventoy-manager
 ```
 
-Pass `--ventoy-dir` to specify the drive you intend to manage. When the flag is omitted, the manager looks for drives with a `ventoy/ventoy.json` configuration under `/run/media/$USER` and `/media/$USER`.
+Pass `--ventoy-dir` to specify the drive you intend to manage. When the flag is omitted, the manager looks for drives with a `ventoy` directory under `/run/media/$USER` and `/media/$USER`. A `ventoy/ventoy.json` configuration is optional: without one, ISOs are still managed normally and only the alias refresh is skipped.
 
 
 ### Batch mode

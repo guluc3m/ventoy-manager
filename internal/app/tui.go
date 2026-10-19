@@ -16,6 +16,7 @@ import (
 	"github.com/guluc3m/ventoy-updater/internal/iso"
 	"github.com/guluc3m/ventoy-updater/internal/source"
 	"github.com/guluc3m/ventoy-updater/internal/space"
+	"github.com/guluc3m/ventoy-updater/internal/ventoy"
 )
 
 // managerMode distinguishes the manager table from the download-catalog screen.
@@ -125,7 +126,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case result.err != nil:
 				m.err = result.err.Error()
 			default:
-				m.done = "ISOs updated; ventoy.json aliases refreshed."
+				m.done = "ISOs updated."
+				if ventoy.HasConfig(m.dir) {
+					m.done = "ISOs updated; ventoy.json aliases refreshed."
+				}
 			}
 			// Applying is the final phase: leave the TUI so the user gets their
 			// shell back, and let Run print the outcome on the normal screen.

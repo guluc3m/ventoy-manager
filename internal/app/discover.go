@@ -33,8 +33,9 @@ func Discover(user string) []Drive {
 }
 
 // DiscoverFrom inspects every first-level directory of the given base paths and
-// keeps those holding a ventoy/ventoy.json configuration, the only drives this
-// tool knows how to update.
+// keeps those holding a ventoy configuration directory. The ventoy.json inside
+// is optional: drives without one can still be managed, they just have no
+// aliases to refresh.
 func DiscoverFrom(bases []string) []Drive {
 	var drives []Drive
 	for _, base := range bases {
@@ -45,7 +46,7 @@ func DiscoverFrom(bases []string) []Drive {
 		for _, entry := range entries {
 			mount := filepath.Join(base, entry.Name())
 			dir := filepath.Join(mount, "ventoy")
-			if info, err := os.Stat(filepath.Join(dir, "ventoy.json")); err != nil || info.IsDir() {
+			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 				continue
 			}
 			d, err := describeDrive(mount, dir)

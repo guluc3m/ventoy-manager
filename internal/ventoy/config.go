@@ -12,6 +12,7 @@ import (
 type Config struct {
 	MenuAlias []Alias `json:"menu_alias"`
 	raw       map[string]json.RawMessage
+	exists    bool
 }
 type Alias struct {
 	Image string `json:"image,omitempty"`
@@ -36,9 +37,19 @@ func (c *Config) SearchRoot() string {
 	return "/"
 }
 
-// Load reads and validates the Ventoy configuration in dir.
+// Load reads and validates the Ventoy configuration in dir. A drive without a
+// ventoy.json is still usable: it loads as an empty configuration with no
+// search-root restriction, and Exists reports that there is nothing to save.
 func Load(dir string) (*Config, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "ventoy.json"))
+	if os.IsNotExist(err) {
+		if info, statErr := os.Stat(dir); statErr != nil {
+			return nil, statErr
+		} else if !info.IsDir() {
+			return nil, fmt.Errorf("%s is not a directory", dir)
+		}
+		return &Config{raw: map[string]json.RawMessage{}}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +63,16 @@ func Load(dir string) (*Config, error) {
 			return nil, err
 		}
 	}
-	return &Config{MenuAlias: aliases, raw: raw}, nil
+	return &Config{MenuAlias: aliases, raw: raw, exists: true}, nil
+}
+
+// Exists reports whether Load found an existing ventoy.json file.
+func (c *Config) Exists() bool { return c.exists }
+
+// HasConfig reports whether dir contains a ventoy.json config file.
+func HasConfig(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "ventoy.json"))
+	return err == nil && !info.IsDir()
 }
 
 // SetAliasForPath updates every menu image glob that currently matches the old ISO.

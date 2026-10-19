@@ -617,6 +617,41 @@ func TestApplyStopsWhenContextCancelled(t *testing.T) {
 	}
 }
 
+// TestApplyWithoutVentoyConfig verifies a drive without ventoy.json still
+// downloads and replaces ISOs, and never creates a configuration file.
+func TestApplyWithoutVentoyConfig(t *testing.T) {
+	payload := []byte("new-iso")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	old := filepath.Join(dir, "old.iso")
+	if err := os.WriteFile(old, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows := []Update{{
+		Current:  iso.Image{Path: old, Family: "X", Filename: "old.iso"},
+		Selected: true, Checked: true,
+		Latest: source.Candidate{
+			Image: iso.Image{Filename: "new.iso"}, URL: server.URL, Size: int64(len(payload)),
+		},
+	}}
+	if err := apply(context.Background(), dir, dir, rows, nil); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "new.iso")); err != nil || string(got) != string(payload) {
+		t.Errorf("downloaded file = %q, %v; want %q", got, err, payload)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("old ISO was not removed (stat err %v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "ventoy.json")); !os.IsNotExist(err) {
+		t.Errorf("apply created a ventoy.json for a config-less drive (stat err %v)", err)
+	}
+}
+
 // TestUpdateCheckboxOnlyWhenUpdatable verifies the Update cell carries a
 // checkbox only for rows that can actually toggle an update: unchecked,
 // up-to-date, and failed rows show the aligned gray dash instead.

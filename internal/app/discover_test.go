@@ -10,11 +10,18 @@ import (
 // makeVentoy creates a fake mounted drive with a ventoy config and ISO files.
 func makeVentoy(t *testing.T, base, name string, isos ...string) string {
 	t.Helper()
-	dir := filepath.Join(base, name, "ventoy")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	mount := makeVentoyWithoutConfig(t, base, name, isos...)
+	if err := os.WriteFile(filepath.Join(mount, "ventoy", "ventoy.json"), []byte("{}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "ventoy.json"), []byte("{}\n"), 0o644); err != nil {
+	return mount
+}
+
+// makeVentoyWithoutConfig creates a Ventoy drive whose ventoy directory has no
+// ventoy.json, as with a fresh or manually prepared drive.
+func makeVentoyWithoutConfig(t *testing.T, base, name string, isos ...string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(base, name, "ventoy"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	isoDir := filepath.Join(base, name, "ISO")
@@ -29,7 +36,7 @@ func makeVentoy(t *testing.T, base, name string, isos ...string) string {
 	return filepath.Join(base, name)
 }
 
-func TestDiscoverFromFindsOnlyConfiguredVentoyDrives(t *testing.T) {
+func TestDiscoverFromFindsVentoyDrivesWithOrWithoutConfig(t *testing.T) {
 	base := t.TempDir()
 	makeVentoy(t, base, "Ventoy", "ubuntu-26.04.1-desktop-amd64.iso", "tails-amd64-7.13.iso")
 	// A second drive with a different config and one ISO plus one non-ISO.
@@ -37,23 +44,30 @@ func TestDiscoverFromFindsOnlyConfiguredVentoyDrives(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(base, "Ventoy1", "ISO", "notes.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A mount without a ventoy config must be ignored, as must plain files.
+	// A third drive carries ISOs but no ventoy.json; it must still be listed.
+	makeVentoyWithoutConfig(t, base, "VentoyNoConfig", "debian-13.1.0-amd64-DVD-1.iso")
+	// A mount without a ventoy directory must be ignored, as must plain files.
 	if err := os.MkdirAll(filepath.Join(base, "PlainUSB"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	drives := DiscoverFrom([]string{base})
-	if len(drives) != 2 {
-		t.Fatalf("got %d drives, want 2: %+v", len(drives), drives)
+	if len(drives) != 3 {
+		t.Fatalf("got %d drives, want 3: %+v", len(drives), drives)
 	}
-	if drives[0].Mount != filepath.Join(base, "Ventoy") || drives[1].Mount != filepath.Join(base, "Ventoy1") {
+	if drives[0].Mount != filepath.Join(base, "Ventoy") || drives[1].Mount != filepath.Join(base, "Ventoy1") ||
+		drives[2].Mount != filepath.Join(base, "VentoyNoConfig") {
 		t.Errorf("drives not sorted by mount point: %+v", drives)
 	}
-	if drives[0].ISOs != 2 || drives[1].ISOs != 1 {
-		t.Errorf("ISO counts: %d and %d, want 2 and 1", drives[0].ISOs, drives[1].ISOs)
+	if drives[0].ISOs != 2 || drives[1].ISOs != 1 || drives[2].ISOs != 1 {
+		t.Errorf("ISO counts: %d, %d and %d, want 2, 1 and 1",
+			drives[0].ISOs, drives[1].ISOs, drives[2].ISOs)
 	}
 	if drives[0].Dir != filepath.Join(base, "Ventoy", "ventoy") {
 		t.Errorf("Dir = %q", drives[0].Dir)
+	}
+	if drives[2].Dir != filepath.Join(base, "VentoyNoConfig", "ventoy") {
+		t.Errorf("config-less Dir = %q", drives[2].Dir)
 	}
 	if drives[0].Size == 0 {
 		t.Error("Size should come from the filesystem the drive lives on")

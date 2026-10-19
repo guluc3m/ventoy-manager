@@ -285,6 +285,7 @@ func apply(ctx context.Context, ventoyDir, root string, rows []Update, progress 
 	if err != nil {
 		return err
 	}
+	hasConfig := cfg.Exists()
 	for _, u := range rows {
 		if ctx.Err() != nil {
 			return errCancelled
@@ -321,9 +322,12 @@ func apply(ctx context.Context, ventoyDir, root string, rows []Update, progress 
 				return fmt.Errorf("remove %s: %w", u.Current.Filename, err)
 			}
 		}
-		if u.Current.Path != "" {
+		if u.Current.Path != "" && hasConfig {
 			cfg.SetAliasForPath(filepath.ToSlash(strings.TrimPrefix(u.Current.Path, filepath.Dir(ventoyDir)+string(os.PathSeparator))), u.Latest.Image.CanonicalName())
 		}
+	}
+	if !hasConfig {
+		return nil
 	}
 	return cfg.Save(ventoyDir)
 }
