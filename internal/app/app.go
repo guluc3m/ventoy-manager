@@ -81,15 +81,16 @@ type Update struct {
 // The manager lists every ISO found on the drive but only checks upstream for
 // updates once the user asks for it.
 func Run(ventoyDir string, explicit, yes, keepOld bool) error {
+	discovered := false
 	if !explicit {
-		resolved, err := selectVentoyDir(yes)
+		resolved, found, err := selectVentoyDir(yes)
 		if err != nil {
 			return err
 		}
-		ventoyDir = resolved
+		ventoyDir, discovered = resolved, found
 	}
 	ventoyDir, _ = filepath.Abs(ventoyDir)
-	cfg, err := ventoy.Load(ventoyDir)
+	cfg, err := loadConfig(ventoyDir, discovered)
 	if err != nil {
 		return fmt.Errorf("load Ventoy configuration: %w", err)
 	}
@@ -145,6 +146,21 @@ func Run(ventoyDir string, explicit, yes, keepOld bool) error {
 		}
 	}
 	return nil
+}
+
+// loadConfig reads the drive's configuration. A discovered Ventoy whose ventoy
+// directory does not exist yet loads as an empty in-memory configuration;
+// nothing is created on the drive. Anywhere else a missing directory stays an
+// error, so explicit --ventoy-dir typos keep failing loudly.
+func loadConfig(dir string, discovered bool) (*ventoy.Config, error) {
+	cfg, err := ventoy.Load(dir)
+	if err == nil || !discovered {
+		return cfg, err
+	}
+	if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+		return ventoy.Empty(), nil
+	}
+	return cfg, err
 }
 
 // searchRoot resolves and validates Ventoy's configured search root.

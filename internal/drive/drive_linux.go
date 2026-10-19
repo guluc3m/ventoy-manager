@@ -5,6 +5,7 @@ package drive
 import (
 	"bufio"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -41,6 +42,34 @@ func Label(root string) string {
 		return ""
 	}
 	return wholeDisk(strings.TrimPrefix(bestDevice, "/dev/"))
+}
+
+// hasVtoyLabel reports whether any lsblk line carries Ventoy's VTOYEFI
+// partition label in any of its fields.
+func hasVtoyLabel(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		for _, field := range strings.Fields(line) {
+			if strings.EqualFold(field, "VTOYEFI") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// HasVtoyEFI reports whether the disk holding root carries a partition labeled
+// VTOYEFI, Ventoy's dedicated bootstrap partition. It is the identifying mark
+// of a Ventoy drive that has no ventoy configuration directory yet.
+func HasVtoyEFI(root string) bool {
+	disk := Label(root)
+	if disk == "" {
+		return false
+	}
+	out, err := exec.Command("lsblk", "-n", "-o", "LABEL", "/dev/"+disk).Output()
+	if err != nil {
+		return false
+	}
+	return hasVtoyLabel(string(out))
 }
 
 // unescapeMount expands the octal escapes a mounts table uses for whitespace.

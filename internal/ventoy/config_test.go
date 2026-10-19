@@ -48,6 +48,22 @@ func TestLoadRejectsMissingDirectory(t *testing.T) {
 	}
 }
 
+// TestEmpty verifies the in-memory configuration of a drive without a ventoy
+// directory behaves like a config-less one: no aliases, unrestricted search
+// root, and nothing to save.
+func TestEmpty(t *testing.T) {
+	c := Empty()
+	if c.Exists() {
+		t.Error("Empty config should not report an existing ventoy.json")
+	}
+	if c.SearchRoot() != "/" {
+		t.Errorf("SearchRoot = %q, want the unrestricted root", c.SearchRoot())
+	}
+	if c.SetAliasForPath("old.iso", "New") {
+		t.Error("Empty config should have no aliases to update")
+	}
+}
+
 // TestSearchRoot verifies the configured Ventoy ISO root is read correctly.
 func TestSearchRoot(t *testing.T) {
 	c := &Config{raw: map[string]json.RawMessage{"control": json.RawMessage(`[{"VTOY_DEFAULT_SEARCH_ROOT":"/images/linux"}]`)}}

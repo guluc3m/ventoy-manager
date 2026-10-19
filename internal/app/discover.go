@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/guluc3m/ventoy-updater/internal/drive"
 	"github.com/guluc3m/ventoy-updater/internal/space"
 )
 
@@ -32,10 +33,15 @@ func Discover(user string) []Drive {
 	return DiscoverFrom(bases)
 }
 
+// hasVtoyEFI is swapped out in tests to fake the partition probe below.
+var hasVtoyEFI = drive.HasVtoyEFI
+
 // DiscoverFrom inspects every first-level directory of the given base paths and
-// keeps those holding a ventoy configuration directory. The ventoy.json inside
-// is optional: drives without one can still be managed, they just have no
-// aliases to refresh.
+// keeps those that look like Ventoy drives: either they carry a ventoy
+// configuration directory, or their disk holds Ventoy's VTOYEFI bootstrap
+// partition. The ventoy.json inside is optional: drives without one can still
+// be managed, they just have no aliases to refresh, and a fresh drive without
+// ISOs is recognized as well.
 func DiscoverFrom(bases []string) []Drive {
 	var drives []Drive
 	for _, base := range bases {
@@ -47,7 +53,11 @@ func DiscoverFrom(bases []string) []Drive {
 			mount := filepath.Join(base, entry.Name())
 			dir := filepath.Join(mount, "ventoy")
 			if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-				continue
+				// No configuration directory: still a Ventoy when its disk
+				// carries the VTOYEFI partition, e.g. a freshly installed one.
+				if !hasVtoyEFI(mount) {
+					continue
+				}
 			}
 			d, err := describeDrive(mount, dir)
 			if err != nil {
@@ -93,23 +103,29 @@ func countISOs(root string) int {
 // selectVentoyDir resolves the drive to update when --ventoy-dir was omitted:
 // the single mounted drive is used automatically, several trigger a prompt, and
 // none falls back to a relative ventoy directory next to the working directory.
-func selectVentoyDir(yes bool) (string, error) {
+// The second result reports whether the directory belongs to a discovered
+// Ventoy drive rather than the fallback path.
+func selectVentoyDir(yes bool) (string, bool, error) {
 	drives := Discover(os.Getenv("USER"))
 	switch len(drives) {
 	case 0:
-		return "ventoy", nil
+		return "ventoy", false, nil
 	case 1:
-		return drives[0].Dir, nil
+		return drives[0].Dir, true, nil
 	}
 	if yes {
 		mounts := make([]string, len(drives))
 		for i, d := range drives {
 			mounts[i] = d.Mount
 		}
-		return "", fmt.Errorf("multiple Ventoy drives are mounted (%s); pass --ventoy-dir to choose one",
+		return "", false, fmt.Errorf("multiple Ventoy drives are mounted (%s); pass --ventoy-dir to choose one",
 			strings.Join(mounts, ", "))
 	}
-	return chooseDrive(drives, os.Stdin, os.Stdout)
+	dir, err := chooseDrive(drives, os.Stdin, os.Stdout)
+	if err != nil {
+		return "", false, err
+	}
+	return dir, true, nil
 }
 
 // chooseDrive asks the user which of several mounted drives to update.

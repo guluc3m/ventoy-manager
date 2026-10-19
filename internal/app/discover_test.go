@@ -36,7 +36,18 @@ func makeVentoyWithoutConfig(t *testing.T, base, name string, isos ...string) st
 	return filepath.Join(base, name)
 }
 
+// stubVtoyEFI replaces the VTOYEFI partition probe for the test's duration.
+func stubVtoyEFI(t *testing.T, f func(mount string) bool) {
+	t.Helper()
+	orig := hasVtoyEFI
+	hasVtoyEFI = f
+	t.Cleanup(func() { hasVtoyEFI = orig })
+}
+
 func TestDiscoverFromFindsVentoyDrivesWithOrWithoutConfig(t *testing.T) {
+	// Tests run on plain directories, never on a real Ventoy disk, so the
+	// partition probe must stay out of the way.
+	stubVtoyEFI(t, func(string) bool { return false })
 	base := t.TempDir()
 	makeVentoy(t, base, "Ventoy", "ubuntu-26.04.1-desktop-amd64.iso", "tails-amd64-7.13.iso")
 	// A second drive with a different config and one ISO plus one non-ISO.
@@ -74,6 +85,33 @@ func TestDiscoverFromFindsVentoyDrivesWithOrWithoutConfig(t *testing.T) {
 	}
 }
 
+// TestDiscoverFromFindsFreshVentoyByVtoyEFI verifies a drive with neither ISOs
+// nor a ventoy directory is recognized through its VTOYEFI bootstrap
+// partition, like a freshly installed stick.
+func TestDiscoverFromFindsFreshVentoyByVtoyEFI(t *testing.T) {
+	base := t.TempDir()
+	fresh := filepath.Join(base, "Ventoy1")
+	if err := os.MkdirAll(filepath.Join(fresh, "System Volume Information"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A plain stick without any Ventoy marker stays hidden.
+	if err := os.MkdirAll(filepath.Join(base, "PlainUSB"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubVtoyEFI(t, func(mount string) bool { return mount == fresh })
+
+	drives := DiscoverFrom([]string{base})
+	if len(drives) != 1 || drives[0].Mount != fresh {
+		t.Fatalf("got %+v, want only the fresh Ventoy drive", drives)
+	}
+	if drives[0].ISOs != 0 {
+		t.Errorf("fresh drive ISOs = %d, want 0", drives[0].ISOs)
+	}
+	if drives[0].Dir != filepath.Join(fresh, "ventoy") {
+		t.Errorf("Dir = %q, want the future ventoy directory", drives[0].Dir)
+	}
+}
+
 func TestChooseDriveAcceptsNumbersAndDefault(t *testing.T) {
 	drives := []Drive{
 		{Mount: "/run/media/u/Ventoy", Dir: "/run/media/u/Ventoy/ventoy", Size: 128 << 30, Free: 29 << 30, ISOs: 24},
@@ -102,6 +140,28 @@ func TestChooseDriveAcceptsNumbersAndDefault(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("prompt output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+// TestLoadConfigLeavesFreshDrivesUntouched verifies a discovered drive without
+// a ventoy directory loads as an empty in-memory configuration instead of
+// creating one, while other paths keep failing on missing directories.
+func TestLoadConfigLeavesFreshDrivesUntouched(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ventoy")
+
+	cfg, err := loadConfig(dir, true)
+	if err != nil {
+		t.Fatalf("loadConfig(discovered): %v", err)
+	}
+	if cfg.Exists() {
+		t.Error("fresh drive should load an empty configuration")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("loadConfig created the ventoy directory")
+	}
+
+	if _, err := loadConfig(dir, false); err == nil {
+		t.Error("undiscovered missing directory should stay an error")
 	}
 }
 

@@ -26,3 +26,17 @@ func Label(root string) string {
 	}
 	return wholeDisk(strings.TrimPrefix(fields[0], "/dev/"))
 }
+
+// HasVtoyEFI reports whether the disk holding root carries a partition named
+// VTOYEFI, Ventoy's dedicated bootstrap partition, via diskutil's listing.
+func HasVtoyEFI(root string) bool {
+	disk := Label(root)
+	if disk == "" {
+		return false
+	}
+	out, err := exec.Command("diskutil", "list", disk).Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToUpper(string(out)), "VTOYEFI")
+}

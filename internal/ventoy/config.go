@@ -66,6 +66,14 @@ func Load(dir string) (*Config, error) {
 	return &Config{MenuAlias: aliases, raw: raw, exists: true}, nil
 }
 
+// Empty returns a usable configuration for a discovered drive that has no
+// ventoy directory yet: no aliases and no search-root restriction. Exists
+// reports false, so nothing is written back until a real configuration is
+// saved into the directory.
+func Empty() *Config {
+	return &Config{raw: map[string]json.RawMessage{}}
+}
+
 // Exists reports whether Load found an existing ventoy.json file.
 func (c *Config) Exists() bool { return c.exists }
 

@@ -7,3 +7,9 @@ package drive
 func Label(root string) string {
 	return ""
 }
+
+// HasVtoyEFI cannot probe partitions on this OS; drives are recognized only
+// by their ventoy configuration directory.
+func HasVtoyEFI(root string) bool {
+	return false
+}

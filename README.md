@@ -1,6 +1,6 @@
 # ventoy-manager
 
-An interactive terminal manager for Linux ISOs on a Ventoy drive (updating, downloading, and deleting). Also refreshes matching `menu_alias` entries in `ventoy/ventoy.json`.
+An interactive terminal manager for Linux ISOs on a Ventoy drive (updating, downloading, and deleting). Also refreshes matching `menu_alias` entries in `ventoy/ventoy.json`, if present.
 
 
 ## Supported images
@@ -24,7 +24,7 @@ go build ./cmd/ventoy-manager
 ventoy-manager
 ```
 
-Pass `--ventoy-dir` to specify the drive you intend to manage. When the flag is omitted, the manager looks for drives with a `ventoy` directory under `/run/media/$USER` and `/media/$USER`. A `ventoy/ventoy.json` configuration is optional: without one, ISOs are still managed normally and only the alias refresh is skipped.
+Pass `--ventoy-dir` to specify the drive you intend to manage. When the flag is omitted, the manager looks for Ventoy drives under `/run/media/$USER` and `/media/$USER`.
 
 
 ### Batch mode
