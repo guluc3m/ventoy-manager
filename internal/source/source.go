@@ -55,21 +55,28 @@ func (r *Resolver) Latest(ctx context.Context, current iso.Image) (Candidate, er
 	if !ok {
 		return Candidate{}, fmt.Errorf("no official source configured for %s (%s)", current.Family, current.Filename)
 	}
-	index := distribution.Index
+	arch := current.Arch
+	if arch == "" {
+		arch = distribution.DefaultArch()
+	}
+	if !distribution.SupportsArch(arch) {
+		return Candidate{}, fmt.Errorf("no %s image configured for %s (%s)", arch, current.Family, current.Filename)
+	}
+	index := distribution.IndexFor(arch)
 	if r.testRoot != "" {
 		index = r.testRoot
 	}
 	if distribution.Release == nil {
-		return r.latestListing(ctx, index, distribution)
+		return r.latestListing(ctx, index, distribution, arch)
 	}
-	return r.latestReleaseDirectory(ctx, index, distribution)
+	return r.latestReleaseDirectory(ctx, index, distribution, arch)
 }
 
 // latestReleaseDirectory finds the newest stable release directory then its
 // ISO. Release directories are considered newest first because mirrors publish
 // a directory before it carries images; an empty or partially synced release
 // falls back to the previous one instead of failing the update check.
-func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, distribution iso.Distribution) (Candidate, error) {
+func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, distribution iso.Distribution, arch string) (Candidate, error) {
 	links, err := r.links(ctx, root)
 	if err != nil {
 		return Candidate{}, err
@@ -84,14 +91,11 @@ func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, dist
 		return Candidate{}, fmt.Errorf("no release directories found at %s", root)
 	}
 	sort.Slice(dirs, func(i, j int) bool { return CompareVersions(dirs[i], dirs[j]) < 0 })
-	paths := []string{distribution.Path}
-	if len(distribution.Paths) > 0 {
-		paths = distribution.Paths
-	}
+	paths := distribution.PathsFor(arch)
 	var lastErr error
 	for i := len(dirs) - 1; i >= 0; i-- {
 		for _, releasePath := range paths {
-			candidate, err := r.latestListing(ctx, root+dirs[i]+releasePath, distribution)
+			candidate, err := r.latestListing(ctx, root+dirs[i]+releasePath, distribution, arch)
 			if err == nil {
 				return candidate, nil
 			}
@@ -102,7 +106,7 @@ func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, dist
 }
 
 // latestListing selects the greatest matching ISO version from an official page.
-func (r *Resolver) latestListing(ctx context.Context, index string, distribution iso.Distribution) (Candidate, error) {
+func (r *Resolver) latestListing(ctx context.Context, index string, distribution iso.Distribution, arch string) (Candidate, error) {
 	links, err := r.links(ctx, index)
 	if err != nil {
 		return Candidate{}, err
@@ -110,10 +114,16 @@ func (r *Resolver) latestListing(ctx context.Context, index string, distribution
 	var images []iso.Image
 	for _, link := range links {
 		if image, ok := distribution.Parse(path.Base(link)); ok {
+			if arch != "" && image.Arch != arch {
+				continue
+			}
 			images = append(images, image)
 		}
 	}
 	if len(images) == 0 {
+		if arch != "" {
+			return Candidate{}, fmt.Errorf("no %s ISO found at %s", arch, index)
+		}
 		return Candidate{}, fmt.Errorf("no matching ISO found at %s", index)
 	}
 	// Compare parsed versions, not filenames: trailing tokens like "amd64"

@@ -18,6 +18,45 @@ func TestDisplayName(t *testing.T) {
 	}
 }
 
+// TestParseArchitectures verifies both upstream spellings map to the amd64 and
+// arm64 names used by the manager without disturbing version extraction.
+func TestParseArchitectures(t *testing.T) {
+	cases := map[string]struct{ arch, version string }{
+		"ubuntu-26.04.1-desktop-amd64.iso":                           {"amd64", "26.04.1"},
+		"ubuntu-26.04.1-desktop-arm64.iso":                           {"arm64", "26.04.1"},
+		"Fedora-Workstation-Live-44-1.2.x86_64.iso":                  {"amd64", "44"},
+		"Fedora-Workstation-Live-44-1.2.aarch64.iso":                 {"arm64", "44"},
+		"debian-13.1.0-arm64-DVD-1.iso":                              {"arm64", "13.1.0"},
+		"openSUSE-Tumbleweed-DVD-aarch64-Snapshot20260101-Media.iso": {"arm64", "20260101"},
+		"Leap-16.0-offline-installer-aarch64.install.iso":            {"arm64", "16.0"},
+		"openSUSE-Leap-15.6-DVD-aarch64-Media.iso":                   {"arm64", "15.6"},
+		"linuxmint-22.3-cinnamon-64bit.iso":                          {"amd64", "22.3"},
+	}
+	for name, want := range cases {
+		image, ok := Parse(name)
+		if !ok {
+			t.Errorf("Parse(%q) did not recognize the image", name)
+			continue
+		}
+		if image.Arch != want.arch || image.Version != want.version {
+			t.Errorf("Parse(%q) = arch %q version %q, want %q %q",
+				name, image.Arch, image.Version, want.arch, want.version)
+		}
+	}
+}
+
+// TestCanonicalNameIncludesNonDefaultArch verifies arm64 aliases stay distinct
+// from the unchanged amd64 alias.
+func TestCanonicalNameIncludesNonDefaultArch(t *testing.T) {
+	image, ok := Parse("ubuntu-26.04.1-desktop-arm64.iso")
+	if !ok {
+		t.Fatal("arm64 image not recognized")
+	}
+	if got, want := image.CanonicalName(), "Ubuntu Desktop LTS 26.04.1 arm64"; got != want {
+		t.Errorf("CanonicalName() = %q, want %q", got, want)
+	}
+}
+
 // TestParseOpenSUSELeap verifies both Leap image layouts, including the
 // build-qualified aliases used by mirrors.
 func TestParseOpenSUSELeap(t *testing.T) {
@@ -96,13 +135,17 @@ func TestCatalog(t *testing.T) {
 // Parse uses, so recognizing an installed ISO and updating it share one entry.
 func TestCatalogParsesEveryImage(t *testing.T) {
 	samples := map[string]string{
-		"Ubuntu":   "ubuntu-26.04.1-desktop-amd64.iso",
-		"Fedora":   "Fedora-Workstation-Live-44-1.2.x86_64.iso",
-		"Debian":   "debian-13.1.0-amd64-DVD-1.iso",
-		"Tails":    "tails-amd64-7.2.iso",
-		"Manjaro":  "manjaro-kde-25.1.0-250101-linux612.iso",
-		"Arch":     "archlinux-2026.01.01-x86_64.iso",
-		"openSUSE": "Leap-16.0-offline-installer-x86_64.install.iso",
+		"Ubuntu":         "ubuntu-26.04.1-desktop-amd64.iso",
+		"Ubuntu arm64":   "ubuntu-26.04.1-desktop-arm64.iso",
+		"Fedora":         "Fedora-Workstation-Live-44-1.2.x86_64.iso",
+		"Fedora arm64":   "Fedora-Workstation-Live-44-1.2.aarch64.iso",
+		"Debian":         "debian-13.1.0-amd64-DVD-1.iso",
+		"Debian arm64":   "debian-13.1.0-arm64-DVD-1.iso",
+		"Tails":          "tails-amd64-7.2.iso",
+		"Manjaro":        "manjaro-kde-25.1.0-250101-linux612.iso",
+		"Arch":           "archlinux-2026.01.01-x86_64.iso",
+		"openSUSE":       "Leap-16.0-offline-installer-x86_64.install.iso",
+		"openSUSE arm64": "Leap-16.0-offline-installer-aarch64.install.iso",
 	}
 	for name, filename := range samples {
 		image, ok := Parse(filename)
@@ -112,6 +155,24 @@ func TestCatalogParsesEveryImage(t *testing.T) {
 		}
 		if _, ok := Lookup(image); !ok {
 			t.Errorf("%s: parsed identity %+v has no catalog entry", name, image)
+		}
+	}
+}
+
+// TestCatalogArches verifies every claimed architecture is reachable through
+// the catalog's own filename rule, so a download row can be resolved.
+func TestCatalogArches(t *testing.T) {
+	for _, entry := range Catalog() {
+		for _, image := range entry.Images() {
+			if image.Arch == "" {
+				t.Errorf("%s %s has no architecture", image.Family, image.Edition)
+			}
+		}
+		if len(entry.Images()) != len(entry.Arches) && len(entry.Arches) > 0 {
+			t.Errorf("%s: Images() = %d, Arches = %d", entry.Family, len(entry.Images()), len(entry.Arches))
+		}
+		if arch := entry.DefaultArch(); arch == "" {
+			t.Errorf("%s has no default architecture", entry.Family)
 		}
 	}
 }

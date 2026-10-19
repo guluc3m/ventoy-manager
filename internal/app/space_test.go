@@ -264,10 +264,12 @@ func TestAgeColorShades(t *testing.T) {
 // parentheses while editions stay bare, e.g. "Manjaro (KDE)".
 func TestFlavorInParentheses(t *testing.T) {
 	cases := map[string]iso.Image{
-		"Ubuntu Desktop LTS":    {Family: "Ubuntu", Edition: "Desktop LTS"},
-		"Linux Mint (Cinnamon)": {Family: "Linux Mint", Flavor: "Cinnamon"},
-		"openSUSE Leap":         {Family: "openSUSE", Edition: "Leap"},
-		"Manjaro (KDE)":         {Family: "Manjaro", Flavor: "KDE"},
+		"Ubuntu Desktop LTS":           {Family: "Ubuntu", Edition: "Desktop LTS"},
+		"Linux Mint (Cinnamon)":        {Family: "Linux Mint", Flavor: "Cinnamon"},
+		"openSUSE Leap":                {Family: "openSUSE", Edition: "Leap"},
+		"Manjaro (KDE)":                {Family: "Manjaro", Flavor: "KDE"},
+		"Ubuntu Desktop LTS (arm64)":   {Family: "Ubuntu", Edition: "Desktop LTS", Arch: "arm64"},
+		"Linux Mint (Cinnamon, amd64)": {Family: "Linux Mint", Flavor: "Cinnamon", Arch: "amd64"},
 	}
 	for want, img := range cases {
 		if got := flavorLabel(img); got != want {
@@ -280,7 +282,7 @@ func TestFlavorInParentheses(t *testing.T) {
 // offers what the drive neither holds nor already queued for download.
 func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
 	m := model{rows: []Update{
-		{Current: iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Version: "24.04.3", Filename: "a.iso"}},
+		{Current: iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Version: "24.04.3", Arch: "amd64", Filename: "a.iso"}},
 	}}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	mm := updated.(model)
@@ -288,15 +290,17 @@ func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
 		t.Fatalf("pressing n did not open the catalog (mode %v)", mm.mode)
 	}
 	for _, entry := range mm.catalog {
-		if entry.Family == "Ubuntu" {
-			t.Errorf("Ubuntu listed although the drive holds it (%v)", mm.catalog)
+		if entry.Family == "Ubuntu" && entry.Arch == "amd64" {
+			t.Errorf("Ubuntu amd64 listed although the drive holds it (%v)", mm.catalog)
 		}
 	}
-	if len(mm.catalog) == 0 || mm.catalog[0].Family != "Fedora" {
-		t.Errorf("first offer = %+v, want Fedora", mm.catalog)
+	if len(mm.catalog) == 0 || mm.catalog[0].Family != "Ubuntu" || mm.catalog[0].Arch != "arm64" {
+		t.Errorf("first offer = %+v, want Ubuntu arm64", mm.catalog)
 	}
-	if len(mm.catalog) != 8 {
-		t.Errorf("len(offers) = %d, want one less than the 9-entry catalog", len(mm.catalog))
+	// The catalog has 14 images across its nine entries; only the installed
+	// Ubuntu amd64 image is hidden.
+	if len(mm.catalog) != 13 {
+		t.Errorf("len(offers) = %d, want 13", len(mm.catalog))
 	}
 }
 

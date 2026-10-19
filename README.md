@@ -14,6 +14,8 @@ An interactive terminal manager for Linux ISOs on a Ventoy drive (updating, down
 - openSUSE Tumbleweed/Leap
 - Manjaro KDE
 
+Both `amd64` (`x86_64`) and `arm64` (`aarch64`) images are recognized and updated where upstream publishes them: Ubuntu, Fedora, Debian and openSUSE Tumbleweed/Leap ship both, while the remaining distributions are `amd64` only.
+
 
 ## Build and run
 

@@ -210,6 +210,9 @@ func recognizedSorting(a, b Update) bool {
 	if v := source.CompareVersions(a.Current.Version, b.Current.Version); v != 0 {
 		return v > 0
 	}
+	if a.Current.Arch != b.Current.Arch {
+		return a.Current.Arch < b.Current.Arch
+	}
 	return a.Current.Filename < b.Current.Filename
 }
 

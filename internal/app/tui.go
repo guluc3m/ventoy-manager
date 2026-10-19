@@ -419,9 +419,10 @@ func (m model) openCatalog() (tea.Model, tea.Cmd) {
 	}
 	var visible []iso.Image
 	for _, entry := range iso.Catalog() {
-		image := entry.Image()
-		if !listed[flavorKey(image)] {
-			visible = append(visible, image)
+		for _, image := range entry.Images() {
+			if !listed[flavorKey(image)] {
+				visible = append(visible, image)
+			}
 		}
 	}
 	m.catalog = visible
@@ -431,9 +432,14 @@ func (m model) openCatalog() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// flavorKey matches catalog entries against listed rows on identity alone.
+// flavorKey matches catalog entries against listed rows on identity and
+// architecture, so holding the amd64 image still offers the arm64 one.
 func flavorKey(i iso.Image) string {
-	return i.Family + "|" + i.Edition + "|" + i.Flavor
+	arch := i.Arch
+	if arch == "" {
+		arch = iso.DefaultArch
+	}
+	return i.Family + "|" + i.Edition + "|" + i.Flavor + "|" + arch
 }
 
 // startApply runs the selected downloads and deletions in the background.
@@ -982,15 +988,23 @@ func (m model) rowView(index int, u Update) string {
 	return line
 }
 
-// flavorLabel renders a versionless distribution name with the flavor in
-// parentheses, e.g. "Ubuntu Desktop LTS" or "Linux Mint (Cinnamon)".
+// flavorLabel renders a versionless distribution name with the flavor and
+// architecture in parentheses, e.g. "Linux Mint (Cinnamon, amd64)". Entries
+// without architecture metadata keep the shorter legacy form.
 func flavorLabel(i iso.Image) string {
 	name := i.Family
 	if i.Edition != "" {
 		name += " " + i.Edition
 	}
+	var qualifiers []string
 	if i.Flavor != "" {
-		name += " (" + i.Flavor + ")"
+		qualifiers = append(qualifiers, i.Flavor)
+	}
+	if i.Arch != "" {
+		qualifiers = append(qualifiers, i.Arch)
+	}
+	if len(qualifiers) > 0 {
+		name += " (" + strings.Join(qualifiers, ", ") + ")"
 	}
 	return name
 }

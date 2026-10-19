@@ -81,7 +81,7 @@ func TestLatestUsesCatalogForDirectListing(t *testing.T) {
 	}))
 	defer server.Close()
 
-	current := iso.Image{Family: "Debian", Edition: "DVD", Version: "12.5.0"}
+	current := iso.Image{Family: "Debian", Flavor: "GNOME", Version: "12.5.0"}
 	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
@@ -91,6 +91,44 @@ func TestLatestUsesCatalogForDirectListing(t *testing.T) {
 	}
 	if !strings.Contains(got.URL, "debian-13.1.0-amd64-DVD-1.iso") {
 		t.Errorf("URL = %q, want newest direct-listing ISO", got.URL)
+	}
+}
+
+// TestLatestFollowsArchitecture verifies resolution keeps the installed
+// image's architecture when a mirror publishes both variants side by side.
+func TestLatestFollowsArchitecture(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<a href="debian-13.1.0-amd64-DVD-1.iso">amd64</a>` +
+			`<a href="debian-13.1.0-arm64-DVD-1.iso">arm64</a>`))
+	}))
+	defer server.Close()
+
+	cases := map[string]string{
+		"amd64": "debian-13.1.0-amd64-DVD-1.iso",
+		"arm64": "debian-13.1.0-arm64-DVD-1.iso",
+	}
+	for arch, want := range cases {
+		current := iso.Image{Family: "Debian", Flavor: "GNOME", Version: "12.5.0", Arch: arch}
+		got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+		if err != nil {
+			t.Fatalf("%s: Latest: %v", arch, err)
+		}
+		if !strings.HasSuffix(got.URL, "/"+want) {
+			t.Errorf("%s: URL = %q, want %q", arch, got.URL, want)
+		}
+		if got.Image.Arch != arch {
+			t.Errorf("%s: resolved arch = %q", arch, got.Image.Arch)
+		}
+	}
+}
+
+// TestLatestRejectsUnsupportedArchitecture verifies a distro without arm64
+// images reports the mismatch instead of silently picking another build.
+func TestLatestRejectsUnsupportedArchitecture(t *testing.T) {
+	current := iso.Image{Family: "Tails OS", Version: "7.0", Arch: "arm64"}
+	_, err := New().Latest(context.Background(), current)
+	if err == nil || !strings.Contains(err.Error(), "arm64") {
+		t.Fatalf("Latest error = %v, want an arm64 mismatch", err)
 	}
 }
 
