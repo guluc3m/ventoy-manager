@@ -94,6 +94,115 @@ func TestLatestUsesCatalogForDirectListing(t *testing.T) {
 	}
 }
 
+// TestLatestOpenSUSELeap verifies Leap 15.x DVD and 16.x offline layouts are
+// both resolvable, that the newest release with an actual image wins, and that
+// an empty or not-yet-populated newer release directory is skipped.
+func TestLatestOpenSUSELeap(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<a href="./15.6/">15.6/</a><a href="./16.0/">16.0/</a><a href="./16.1/">16.1/</a>`))
+		case "/16.1/":
+			_, _ = w.Write([]byte(`<a href="./offline/">offline/</a>`))
+		case "/16.1/offline/":
+			_, _ = w.Write([]byte(`<a href="README">no images yet</a>`))
+		case "/16.0/":
+			_, _ = w.Write([]byte(`<a href="./offline/">offline/</a>`))
+		case "/16.0/offline/":
+			// Mirrors publish a build-qualified copy next to the stable alias.
+			_, _ = w.Write([]byte(`<a href="Leap-16.0-offline-installer-x86_64-Build178.27.install.iso">build</a>` +
+				`<a href="Leap-16.0-offline-installer-x86_64.install.iso">stable</a>`))
+		case "/15.6/":
+			_, _ = w.Write([]byte(`<a href="./iso/">iso/</a>`))
+		case "/15.6/iso/":
+			_, _ = w.Write([]byte(`<a href="openSUSE-Leap-15.6-DVD-x86_64-Build710.3-Media.iso">build</a>` +
+				`<a href="openSUSE-Leap-15.6-DVD-x86_64-Media.iso">stable</a>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	current := iso.Image{Family: "openSUSE", Edition: "Leap", Version: "15.6"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "16.0"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if !strings.HasSuffix(got.URL, "/16.0/offline/Leap-16.0-offline-installer-x86_64.install.iso") {
+		t.Errorf("URL = %q, want the stable (unqualified) Leap 16.0 image", got.URL)
+	}
+}
+
+// TestLatestOpenSUSELeapDVDOnly verifies a Leap 15.x mirror, which has no
+// offline/ directory at all, resolves through the release's iso/ directory.
+func TestLatestOpenSUSELeapDVDOnly(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<a href="./15.6/">15.6/</a>`))
+		case "/15.6/":
+			_, _ = w.Write([]byte(`<a href="./iso/">iso/</a>`))
+		case "/15.6/iso/":
+			_, _ = w.Write([]byte(`<a href="openSUSE-Leap-15.6-DVD-x86_64-Build710.3-Media.iso">build</a>` +
+				`<a href="openSUSE-Leap-15.6-DVD-x86_64-Media.iso">stable</a>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	current := iso.Image{Family: "openSUSE", Edition: "Leap", Version: "15.5"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "15.6"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if !strings.HasSuffix(got.URL, "/15.6/iso/openSUSE-Leap-15.6-DVD-x86_64-Media.iso") {
+		t.Errorf("URL = %q, want the Leap 15.6 DVD image", got.URL)
+	}
+}
+
+// TestLatestOpenSUSELeapBuildOnly verifies that a mirror listing only the
+// build-qualified image still yields an update instead of an unavailable row.
+func TestLatestOpenSUSELeapBuildOnly(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<a href="./16.1/">16.1/</a>`))
+		case "/16.1/":
+			_, _ = w.Write([]byte(`<a href="./offline/">offline/</a>`))
+		case "/16.1/offline/":
+			_, _ = w.Write([]byte(`<a href="Leap-16.1-offline-installer-x86_64-Build55.2.install.iso">iso</a>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	current := iso.Image{Family: "openSUSE", Edition: "Leap", Version: "16.0"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "16.1"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if !strings.Contains(got.URL, "Leap-16.1-offline-installer-x86_64-Build55.2.install.iso") {
+		t.Errorf("URL = %q, want the build-qualified image", got.URL)
+	}
+}
+
 // TestProbe verifies that the Last-Modified header and advertised size fill
 // Candidate.Published and Candidate.Size.
 func TestProbe(t *testing.T) {

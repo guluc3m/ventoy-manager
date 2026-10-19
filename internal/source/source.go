@@ -65,7 +65,10 @@ func (r *Resolver) Latest(ctx context.Context, current iso.Image) (Candidate, er
 	return r.latestReleaseDirectory(ctx, index, distribution)
 }
 
-// latestReleaseDirectory finds the newest stable release directory then its ISO.
+// latestReleaseDirectory finds the newest stable release directory then its
+// ISO. Release directories are considered newest first because mirrors publish
+// a directory before it carries images; an empty or partially synced release
+// falls back to the previous one instead of failing the update check.
 func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, distribution iso.Distribution) (Candidate, error) {
 	links, err := r.links(ctx, root)
 	if err != nil {
@@ -81,7 +84,21 @@ func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, dist
 		return Candidate{}, fmt.Errorf("no release directories found at %s", root)
 	}
 	sort.Slice(dirs, func(i, j int) bool { return CompareVersions(dirs[i], dirs[j]) < 0 })
-	return r.latestListing(ctx, root+dirs[len(dirs)-1]+distribution.Path, distribution)
+	paths := []string{distribution.Path}
+	if len(distribution.Paths) > 0 {
+		paths = distribution.Paths
+	}
+	var lastErr error
+	for i := len(dirs) - 1; i >= 0; i-- {
+		for _, releasePath := range paths {
+			candidate, err := r.latestListing(ctx, root+dirs[i]+releasePath, distribution)
+			if err == nil {
+				return candidate, nil
+			}
+			lastErr = err
+		}
+	}
+	return Candidate{}, fmt.Errorf("no matching ISO found under %s: %w", root, lastErr)
 }
 
 // latestListing selects the greatest matching ISO version from an official page.
@@ -101,7 +118,18 @@ func (r *Resolver) latestListing(ctx context.Context, index string, distribution
 	}
 	// Compare parsed versions, not filenames: trailing tokens like "amd64"
 	// would otherwise poison the numeric runs (26.04.1 vs 26.04 amd64).
-	sort.Slice(images, func(i, j int) bool { return CompareVersions(images[i].Version, images[j].Version) < 0 })
+	// For equal versions, prefer the unqualified alias (e.g. the Leap image
+	// without a Build suffix) so the reported filename stays stable.
+	sort.Slice(images, func(i, j int) bool {
+		if c := CompareVersions(images[i].Version, images[j].Version); c != 0 {
+			return c < 0
+		}
+		ri, rj := filenameRank(images[i].Filename), filenameRank(images[j].Filename)
+		if ri != rj {
+			return ri > rj
+		}
+		return images[i].Filename < images[j].Filename
+	})
 	image := images[len(images)-1]
 	base, _ := url.Parse(index)
 	ref, _ := url.Parse(image.Filename)
@@ -195,6 +223,15 @@ func (r *Resolver) links(ctx context.Context, address string) ([]string, error) 
 		links = append(links, strings.TrimPrefix(m[1], "./"))
 	}
 	return links, nil
+}
+
+// filenameRank orders equally versioned mirror aliases. Unqualified names win
+// over build-qualified ones so the chosen download URL is the stable alias.
+func filenameRank(name string) int {
+	if strings.Contains(name, "-Build") {
+		return 1
+	}
+	return 0
 }
 
 // CompareVersions compares numeric runs in filenames, release directory names,

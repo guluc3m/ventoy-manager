@@ -18,6 +18,34 @@ func TestDisplayName(t *testing.T) {
 	}
 }
 
+// TestParseOpenSUSELeap verifies both Leap image layouts, including the
+// build-qualified aliases used by mirrors.
+func TestParseOpenSUSELeap(t *testing.T) {
+	cases := []string{
+		"Leap-16.0-offline-installer-x86_64.install.iso",
+		"Leap-16.1-offline-installer-x86_64-Build55.2.install.iso",
+		"openSUSE-Leap-15.6-DVD-x86_64-Media.iso",
+		"openSUSE-Leap-15.6-DVD-x86_64-Current.iso",
+		"openSUSE-Leap-15.6-DVD-x86_64-Build710.3-Media.iso",
+	}
+	for _, name := range cases {
+		i, ok := Parse(name)
+		if !ok {
+			t.Errorf("Parse(%q) did not recognize the image", name)
+			continue
+		}
+		if i.Family != "openSUSE" || i.Edition != "Leap" {
+			t.Errorf("Parse(%q) = %#v, want openSUSE Leap", name, i)
+		}
+	}
+	if i, _ := Parse("Leap-16.0-offline-installer-x86_64.install.iso"); i.Version != "16.0" {
+		t.Errorf("version = %q, want 16.0", i.Version)
+	}
+	if i, _ := Parse("openSUSE-Leap-15.6-DVD-x86_64-Media.iso"); i.Version != "15.6" {
+		t.Errorf("version = %q, want 15.6", i.Version)
+	}
+}
+
 // TestCatalog verifies the single catalog is complete and unambiguous: every
 // entry can be looked up by its identity and carries both the filename rule
 // and the upstream index needed to recognize and update its images.

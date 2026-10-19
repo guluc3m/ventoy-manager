@@ -23,9 +23,12 @@ type Distribution struct {
 
 	// Release, when set, selects the newest matching release subdirectory
 	// under Index. Path is appended to that directory before looking for the
-	// ISO; it is ignored for listings that live directly at Index.
+	// ISO; it is ignored for listings that live directly at Index. Paths
+	// overrides Path when several layouts exist; each candidate release is
+	// tried in order until one contains a matching ISO.
 	Release *regexp.Regexp
 	Path    string
+	Paths   []string
 }
 
 // catalog is the single source of truth for the distributions this manager
@@ -73,10 +76,12 @@ var catalog = []Distribution{
 	},
 	{
 		Family: "openSUSE", Edition: "Leap",
-		Filename: regexp.MustCompile(`(?i)^Leap-([0-9]+\.[0-9]+)-offline-installer-x86_64\.install\.iso$`),
+		// Leap 16.x ships a unified offline installer, while 15.x publishes a
+		// DVD image. Mirrors keep build-qualified aliases beside both spellings.
+		Filename: regexp.MustCompile(`(?i)^(?:Leap-([0-9]+\.[0-9]+)-offline-installer-x86_64(?:-Build[0-9.]+)?\.install\.iso|openSUSE-Leap-([0-9]+\.[0-9]+)-DVD-x86_64(?:-Build[0-9.]+)?(?:-Current|-Media)?\.iso)$`),
 		Index:    "https://download.opensuse.org/distribution/leap/",
 		Release:  regexp.MustCompile(`^[12][0-9]\.[0-9]+/$`),
-		Path:     "offline/",
+		Paths:    []string{"offline/", "iso/"},
 	},
 	{
 		Family: "Manjaro", Flavor: "KDE",
@@ -115,12 +120,21 @@ func (d Distribution) Parse(path string) (Image, bool) {
 	if match == nil {
 		return Image{}, false
 	}
+	// Regexes with alternatives may expose the version through any one of
+	// several capture groups; the first populated one is the version.
+	version := ""
+	for _, capture := range match[1:] {
+		if capture != "" {
+			version = capture
+			break
+		}
+	}
 	return Image{
 		Path:     path,
 		Filename: name,
 		Family:   d.Family,
 		Edition:  d.Edition,
 		Flavor:   d.Flavor,
-		Version:  match[1],
+		Version:  version,
 	}, true
 }
