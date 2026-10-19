@@ -103,7 +103,7 @@ func Run(ventoyDir string, explicit, yes, keepOld bool) error {
 		return err
 	}
 	rows := diskRows(images, keepOld)
-	if len(rows) == 0 {
+	if len(rows) == 0 && yes {
 		fmt.Println("No ISOs found under the Ventoy search root.")
 		return nil
 	}

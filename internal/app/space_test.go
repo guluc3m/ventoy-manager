@@ -280,6 +280,21 @@ func TestFlavorInParentheses(t *testing.T) {
 
 // TestOpenCatalogSkipsListedDistributions verifies the download screen only
 // offers what the drive neither holds nor already queued for download.
+// TestEmptyDriveStillOpensUI verifies a drive without ISOs is not rejected:
+// the manager shows the empty hint and the catalog download screen works.
+func TestEmptyDriveStillOpensUI(t *testing.T) {
+	m := model{rows: nil}
+	if view := m.View(); !strings.Contains(view, "no ISOs") || !strings.Contains(view, "n to download") {
+		t.Errorf("empty drive view = %q, want the download hint", view)
+	}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	mm := updated.(model)
+	if mm.mode != modeCatalog || len(mm.catalog) == 0 {
+		t.Errorf("pressing n on an empty drive: mode %v with %d catalog entries",
+			mm.mode, len(mm.catalog))
+	}
+}
+
 func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
 	m := model{rows: []Update{
 		{Current: iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Version: "24.04.3", Arch: "amd64", Filename: "a.iso"}},

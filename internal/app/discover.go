@@ -1,14 +1,16 @@
 package app
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/guluc3m/ventoy-updater/internal/drive"
@@ -18,6 +20,7 @@ import (
 // Drive describes one mounted Ventoy data partition this tool can update.
 type Drive struct {
 	Mount string // partition mount point, e.g. /run/media/user/Ventoy
+	Name  string // whole-disk device name, e.g. "sda", without partition digits
 	Dir   string // ventoy configuration directory on that partition
 	Size  uint64 // partition size in bytes
 	Free  uint64 // available space in bytes
@@ -78,6 +81,7 @@ func describeDrive(mount, dir string) (Drive, error) {
 	}
 	return Drive{
 		Mount: mount,
+		Name:  drive.Label(mount),
 		Dir:   dir,
 		Size:  uint64(s.Total),
 		Free:  uint64(s.Free),
@@ -128,41 +132,93 @@ func selectVentoyDir(yes bool) (string, bool, error) {
 	return dir, true, nil
 }
 
-// chooseDrive asks the user which of several mounted drives to update.
+// chooseDrive asks which of several mounted drives to update, via bubbletea:
+// arrows or a number pick a drive, enter confirms, q or esc cancels.
 func chooseDrive(drives []Drive, in io.Reader, out io.Writer) (string, error) {
-	mountWidth := 0
-	for _, d := range drives {
-		if n := len(d.Mount); n > mountWidth {
-			mountWidth = n
+	p := tea.NewProgram(drivePicker{drives: drives, chosen: -1},
+		tea.WithInput(in), tea.WithOutput(out))
+	final, err := p.Run()
+	if err != nil {
+		return "", fmt.Errorf("no drive selected: %w", err)
+	}
+	m, ok := final.(drivePicker)
+	if !ok || m.chosen < 0 {
+		return "", errors.New("no drive selected")
+	}
+	return drives[m.chosen].Dir, nil
+}
+
+// drivePicker is the bubbletea model behind the drive selection prompt.
+type drivePicker struct {
+	drives []Drive
+	cursor int
+	chosen int // index into drives once confirmed, -1 until then
+}
+
+func (m drivePicker) Init() tea.Cmd { return nil }
+
+func (m drivePicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	key, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch key.String() {
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	case "down", "j":
+		if m.cursor < len(m.drives)-1 {
+			m.cursor++
+		}
+	case "enter", "ctrl+j":
+		if m.chosen < 0 {
+			m.chosen = m.cursor
+		}
+		return m, tea.Quit
+	case "q", "esc", "ctrl+c":
+		return m, tea.Quit
+	default:
+		if n, err := strconv.Atoi(key.String()); err == nil && n >= 1 && n <= len(m.drives) {
+			if m.chosen < 0 {
+				m.chosen = n - 1
+			}
+			return m, tea.Quit
 		}
 	}
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, lipgloss.NewStyle().Bold(true).
+	return m, nil
+}
+
+func (m drivePicker) View() string {
+	names := make([]string, len(m.drives))
+	width := 0
+	for i, d := range m.drives {
+		names[i] = d.Name
+		if names[i] == "" {
+			names[i] = d.Mount
+		}
+		if n := len(names[i]); n > width {
+			width = n
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintln(&b)
+	b.WriteString(lipgloss.NewStyle().Bold(true).
 		Foreground(lipgloss.Color("86")).Render("Multiple Ventoy drives are mounted."))
-	fmt.Fprintf(out, "\nWhich one should be updated? [%d-%d, enter for 1]\n\n", 1, len(drives))
-	for i, d := range drives {
-		fmt.Fprintf(out, "  %d) %-*s  %s total, %s free, %d ISO%s\n",
-			i+1, mountWidth, d.Mount, formatSize(d.Size), formatSize(d.Free),
+	fmt.Fprintf(&b, "\n\nWhich one would you like to manage?")
+	for i, d := range m.drives {
+		row := fmt.Sprintf("%d) %-*s  %s total, %s free, %d ISO%s",
+			i+1, width, names[i], formatSize(d.Size), formatSize(d.Free),
 			d.ISOs, plural(d.ISOs))
+		if i == m.cursor {
+			b.WriteString("> " + lipgloss.NewStyle().Bold(true).Render(row))
+		} else {
+			b.WriteString("  " + row)
+		}
+		b.WriteByte('\n')
 	}
-	reader := bufio.NewReader(in)
-	for {
-		fmt.Fprint(out, "\n> ")
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return "", fmt.Errorf("no drive selected: %w", err)
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			return drives[0].Dir, nil
-		}
-		var n int
-		if _, err := fmt.Sscanf(line, "%d", &n); err != nil || n < 1 || n > len(drives) {
-			fmt.Fprintf(out, "Please enter a number between 1 and %d.\n", len(drives))
-			continue
-		}
-		return drives[n-1].Dir, nil
-	}
+	b.WriteString("\n↑/↓ or a number selects, enter confirms, q cancels")
+	return b.String()
 }
 
 // formatSize renders a byte count in megabytes or gigabytes.
