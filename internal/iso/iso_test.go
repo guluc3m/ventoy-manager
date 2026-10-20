@@ -24,6 +24,8 @@ func TestParseArchitectures(t *testing.T) {
 	cases := map[string]struct{ arch, version string }{
 		"ubuntu-26.04.1-desktop-amd64.iso":                           {"amd64", "26.04.1"},
 		"ubuntu-26.04.1-desktop-arm64.iso":                           {"arm64", "26.04.1"},
+		"ubuntu-26.10-desktop-amd64.iso":                             {"amd64", "26.10"},
+		"ubuntu-26.10-desktop-arm64.iso":                             {"arm64", "26.10"},
 		"Fedora-Workstation-Live-44-1.2.x86_64.iso":                  {"amd64", "44"},
 		"Fedora-Workstation-Live-44-1.2.aarch64.iso":                 {"arm64", "44"},
 		"Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso":                  {"amd64", "44"},
@@ -42,6 +44,8 @@ func TestParseArchitectures(t *testing.T) {
 		"Leap-16.0-offline-installer-aarch64.install.iso":            {"arm64", "16.0"},
 		"openSUSE-Leap-15.6-DVD-aarch64-Media.iso":                   {"arm64", "15.6"},
 		"linuxmint-22.3-cinnamon-64bit.iso":                          {"amd64", "22.3"},
+		"linuxmint-22.3-xfce-64bit.iso":                              {"amd64", "22.3"},
+		"linuxmint-22.3-mate-64bit.iso":                              {"amd64", "22.3"},
 		"EndeavourOS_Titan-Nova-2026.08.15.iso":                      {"amd64", "2026.08.15"},
 		"cachyos-desktop-linux-260809.iso":                           {"amd64", "260809"},
 		"shredos-2025.11_31_x86-64_v0.42_20260716.iso":               {"amd64", "20260716"},
@@ -55,6 +59,85 @@ func TestParseArchitectures(t *testing.T) {
 		if image.Arch != want.arch || image.Version != want.version {
 			t.Errorf("Parse(%q) = arch %q version %q, want %q %q",
 				name, image.Arch, image.Version, want.arch, want.version)
+		}
+	}
+}
+
+// TestParseUbuntuReleaseChannel verifies LTS and interim Ubuntu images keep
+// distinct identities, since they share one filename pattern.
+func TestParseUbuntuReleaseChannel(t *testing.T) {
+	cases := map[string]string{
+		"ubuntu-26.04-desktop-amd64.iso":   "Desktop LTS",
+		"ubuntu-26.04.1-desktop-amd64.iso": "Desktop LTS",
+		"ubuntu-26.10-desktop-amd64.iso":   "Desktop",
+		"ubuntu-25.10-desktop-amd64.iso":   "Desktop",
+		"ubuntu-25.04-desktop-amd64.iso":   "Desktop",
+	}
+	for name, want := range cases {
+		image, ok := Parse(name)
+		if !ok {
+			t.Errorf("Parse(%q) did not recognize the image", name)
+			continue
+		}
+		if image.Edition != want {
+			t.Errorf("Parse(%q) edition = %q, want %q", name, image.Edition, want)
+		}
+	}
+}
+
+// TestParseFedoraKDEIsWorkstationFlavor verifies Fedora's KDE image is a
+// Workstation spin rather than an edition of its own.
+func TestParseFedoraKDEIsWorkstationFlavor(t *testing.T) {
+	image, ok := Parse("Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso")
+	if !ok {
+		t.Fatal("Fedora KDE image not recognized")
+	}
+	if image.Edition != "Workstation" || image.Flavor != "KDE" {
+		t.Errorf("edition = %q flavor = %q, want Workstation KDE", image.Edition, image.Flavor)
+	}
+}
+
+// TestParseDebianHasNoDesktopFlavor verifies Debian's DVD is not branded with
+// a desktop environment; it ships several.
+func TestParseDebianHasNoDesktopFlavor(t *testing.T) {
+	image, ok := Parse("debian-13.1.0-amd64-DVD-1.iso")
+	if !ok {
+		t.Fatal("Debian image not recognized")
+	}
+	if image.Flavor != "" {
+		t.Errorf("flavor = %q, want none", image.Flavor)
+	}
+}
+
+// TestParseArtixVariants verifies every Artix image upstream publishes maps to
+// its desktop (or base/community variant) and init system.
+func TestParseArtixVariants(t *testing.T) {
+	cases := map[string]struct{ edition, flavor string }{
+		"artix-plasma-openrc-20260813-x86_64.iso":        {"Graphical", "Plasma OpenRC"},
+		"artix-plasma-dinit-20260813-x86_64.iso":         {"Graphical", "Plasma Dinit"},
+		"artix-xfce-openrc-20260813-x86_64.iso":          {"Graphical", "XFCE OpenRC"},
+		"artix-xfce-dinit-20260813-x86_64.iso":           {"Graphical", "XFCE Dinit"},
+		"artix-lxqt-runit-20260816-x86_64.iso":           {"Graphical", "LXQt Runit"},
+		"artix-mate-openrc-20260813-x86_64.iso":          {"Graphical", "MATE OpenRC"},
+		"artix-mate-dinit-20260813-x86_64.iso":           {"Graphical", "MATE Dinit"},
+		"artix-cinnamon-openrc-20260814-x86_64.iso":      {"Graphical", "Cinnamon OpenRC"},
+		"artix-cinnamon-dinit-20260814-x86_64.iso":       {"Graphical", "Cinnamon Dinit"},
+		"artix-community-gtk-openrc-20260821-x86_64.iso": {"Community", "GTK OpenRC"},
+		"artix-community-qt-openrc-20260821-x86_64.iso":  {"Community", "Qt OpenRC"},
+		"artix-base-openrc-20260813-x86_64.iso":          {"Base", "OpenRC"},
+		"artix-base-runit-20260813-x86_64.iso":           {"Base", "Runit"},
+		"artix-base-dinit-20260813-x86_64.iso":           {"Base", "Dinit"},
+		"artix-base-s6-20260813-x86_64.iso":              {"Base", "s6"},
+	}
+	for name, want := range cases {
+		image, ok := Parse(name)
+		if !ok {
+			t.Errorf("Parse(%q) did not recognize the image", name)
+			continue
+		}
+		if image.Edition != want.edition || image.Flavor != want.flavor {
+			t.Errorf("Parse(%q) = edition %q flavor %q, want %q %q",
+				name, image.Edition, image.Flavor, want.edition, want.flavor)
 		}
 	}
 }
@@ -149,30 +232,36 @@ func TestCatalog(t *testing.T) {
 // Parse uses, so recognizing an installed ISO and updating it share one entry.
 func TestCatalogParsesEveryImage(t *testing.T) {
 	samples := map[string]string{
-		"Ubuntu":         "ubuntu-26.04.1-desktop-amd64.iso",
-		"Ubuntu arm64":   "ubuntu-26.04.1-desktop-arm64.iso",
-		"Fedora":         "Fedora-Workstation-Live-44-1.2.x86_64.iso",
-		"Fedora arm64":   "Fedora-Workstation-Live-44-1.2.aarch64.iso",
-		"Fedora KDE":     "Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso",
-		"Silverblue":     "Fedora-Silverblue-ostree-x86_64-44-1.7.iso",
-		"Rocky":          "Rocky-10.2-x86_64-dvd1.iso",
-		"Debian":         "debian-13.1.0-amd64-DVD-1.iso",
-		"Debian arm64":   "debian-13.1.0-arm64-DVD-1.iso",
-		"MX":             "MX-25.3_Xfce_x64.iso",
-		"Tails":          "tails-amd64-7.2.iso",
-		"Manjaro":        "manjaro-kde-25.1.0-250101-linux612.iso",
-		"Manjaro XFCE":   "manjaro-xfce-25.1.0-250101-linux612.iso",
-		"Manjaro GNOME":  "manjaro-gnome-25.1.0-250101-linux612.iso",
-		"Arch":           "archlinux-2026.01.01-x86_64.iso",
-		"Artix":          "artix-base-openrc-20260813-x86_64.iso",
-		"openSUSE":       "Leap-16.0-offline-installer-x86_64.install.iso",
-		"openSUSE arm64": "Leap-16.0-offline-installer-aarch64.install.iso",
-		"EndeavourOS":    "EndeavourOS_Titan-Nova-2026.08.15.iso",
-		"Nobara":         "Nobara-44-Official-2026-09-02.iso",
-		"CachyOS":        "cachyos-desktop-linux-260809.iso",
-		"Omarchy":        "omarchy-4.0.4.iso",
-		"ShredOS":        "shredos-2025.11_31_x86-64_v0.42_20260716.iso",
-		"GParted Live":   "gparted-live-1.7.0-8-amd64.iso",
+		"Ubuntu":          "ubuntu-26.04.1-desktop-amd64.iso",
+		"Ubuntu arm64":    "ubuntu-26.04.1-desktop-arm64.iso",
+		"Ubuntu interim":  "ubuntu-26.10-desktop-amd64.iso",
+		"Fedora":          "Fedora-Workstation-Live-44-1.2.x86_64.iso",
+		"Fedora arm64":    "Fedora-Workstation-Live-44-1.2.aarch64.iso",
+		"Fedora KDE":      "Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso",
+		"Silverblue":      "Fedora-Silverblue-ostree-x86_64-44-1.7.iso",
+		"Rocky":           "Rocky-10.2-x86_64-dvd1.iso",
+		"Debian":          "debian-13.1.0-amd64-DVD-1.iso",
+		"Debian arm64":    "debian-13.1.0-arm64-DVD-1.iso",
+		"MX":              "MX-25.3_Xfce_x64.iso",
+		"Tails":           "tails-amd64-7.2.iso",
+		"Manjaro":         "manjaro-kde-25.1.0-250101-linux612.iso",
+		"Manjaro XFCE":    "manjaro-xfce-25.1.0-250101-linux612.iso",
+		"Manjaro GNOME":   "manjaro-gnome-25.1.0-250101-linux612.iso",
+		"Arch":            "archlinux-2026.01.01-x86_64.iso",
+		"Mint Cinnamon":   "linuxmint-22.3-cinnamon-64bit.iso",
+		"Mint XFCE":       "linuxmint-22.3-xfce-64bit.iso",
+		"Mint MATE":       "linuxmint-22.3-mate-64bit.iso",
+		"Artix Plasma":    "artix-plasma-dinit-20260813-x86_64.iso",
+		"Artix Community": "artix-community-gtk-openrc-20260821-x86_64.iso",
+		"Artix base":      "artix-base-s6-20260813-x86_64.iso",
+		"openSUSE":        "Leap-16.0-offline-installer-x86_64.install.iso",
+		"openSUSE arm64":  "Leap-16.0-offline-installer-aarch64.install.iso",
+		"EndeavourOS":     "EndeavourOS_Titan-Nova-2026.08.15.iso",
+		"Nobara":          "Nobara-44-Official-2026-09-02.iso",
+		"CachyOS":         "cachyos-desktop-linux-260809.iso",
+		"Omarchy":         "omarchy-4.0.4.iso",
+		"ShredOS":         "shredos-2025.11_31_x86-64_v0.42_20260716.iso",
+		"GParted Live":    "gparted-live-1.7.0-8-amd64.iso",
 	}
 	for name, filename := range samples {
 		image, ok := Parse(filename)

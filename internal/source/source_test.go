@@ -73,6 +73,76 @@ func TestLatestUbuntuPrefersPointRelease(t *testing.T) {
 	}
 }
 
+// TestLatestUbuntuArm64UsesCDImage verifies arm64 desktop images resolve from
+// the cdimage tree, which nests each release's images under release/.
+func TestLatestUbuntuArm64UsesCDImage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<a href="24.04/">24.04/</a><a href="26.04/">26.04/</a>`))
+		case "/26.04/":
+			_, _ = w.Write([]byte(`<a href="release/">release/</a>`))
+		case "/26.04/release/":
+			_, _ = w.Write([]byte(`<a href="ubuntu-26.04.1-desktop-arm64.iso">iso</a>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	current := iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Version: "24.04", Arch: "arm64"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "26.04.1"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if want := "ubuntu-26.04.1-desktop-arm64.iso"; !strings.HasSuffix(got.URL, "/release/"+want) {
+		t.Errorf("URL = %q, want the arm64 image below release/", got.URL)
+	}
+}
+
+// TestLatestUbuntuInterimRelease verifies interim releases resolve separately
+// from LTS ones: the newest .10 image is offered for Ubuntu Desktop, while the
+// LTS entry keeps following even-year April releases only.
+func TestLatestUbuntuInterimRelease(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<a href="24.04/">24.04/</a><a href="25.10/">25.10/</a>` +
+				`<a href="26.04/">26.04/</a><a href="26.10/">26.10/</a>`))
+		case "/25.10/":
+			_, _ = w.Write([]byte(`<a href="ubuntu-25.10-desktop-amd64.iso">iso</a>`))
+		case "/26.04/":
+			_, _ = w.Write([]byte(`<a href="ubuntu-26.04-desktop-amd64.iso">iso</a>`))
+		case "/26.10/":
+			_, _ = w.Write([]byte(`<a href="ubuntu-26.10-desktop-amd64.iso">iso</a>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	cases := map[iso.Image]string{
+		{Family: "Ubuntu", Edition: "Desktop LTS", Version: "24.04"}: "26.04",
+		{Family: "Ubuntu", Edition: "Desktop", Version: "25.10"}:     "26.10",
+	}
+	for current, want := range cases {
+		got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+		if err != nil {
+			t.Fatalf("%s: Latest: %v", current.Edition, err)
+		}
+		if got.Image.Version != want {
+			t.Errorf("%s: available version = %q, want %q", current.Edition, got.Image.Version, want)
+		}
+	}
+}
+
 // TestLatestUsesCatalogForDirectListing verifies distributions whose releases
 // live directly at the catalog index (Debian) resolve through the same
 // catalog entry as release-directory distributions.
@@ -82,7 +152,7 @@ func TestLatestUsesCatalogForDirectListing(t *testing.T) {
 	}))
 	defer server.Close()
 
-	current := iso.Image{Family: "Debian", Flavor: "GNOME", Version: "12.5.0"}
+	current := iso.Image{Family: "Debian", Version: "12.5.0"}
 	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
 	if err != nil {
 		t.Fatalf("Latest: %v", err)
@@ -109,7 +179,7 @@ func TestLatestFollowsArchitecture(t *testing.T) {
 		"arm64": "debian-13.1.0-arm64-DVD-1.iso",
 	}
 	for arch, want := range cases {
-		current := iso.Image{Family: "Debian", Flavor: "GNOME", Version: "12.5.0", Arch: arch}
+		current := iso.Image{Family: "Debian", Version: "12.5.0", Arch: arch}
 		got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
 		if err != nil {
 			t.Fatalf("%s: Latest: %v", arch, err)

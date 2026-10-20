@@ -172,7 +172,8 @@ func TestTreeGroupsFamilyEditionFlavorArch(t *testing.T) {
 	tree := buildCatalogTree(map[string]bool{})
 	want := []struct{ label, arch string }{
 		{"Ubuntu", ""}, {"Desktop LTS", ""}, {"amd64", "amd64"}, {"arm64", "arm64"},
-		{"Fedora", ""}, {"Workstation", ""}, {"GNOME", ""},
+		{"Desktop", ""}, {"amd64", "amd64"}, {"arm64", "arm64"},
+		{"Fedora", ""}, {"Workstation", ""}, {"GNOME", ""}, {"amd64", "amd64"}, {"arm64", "arm64"}, {"KDE", ""},
 	}
 	if len(tree) < len(want) {
 		t.Fatalf("tree has %d rows, want at least %d", len(tree), len(want))
@@ -184,7 +185,8 @@ func TestTreeGroupsFamilyEditionFlavorArch(t *testing.T) {
 		}
 	}
 	// Arch leaves hang under their flavor or edition, and a distribution
-	// without an edition (Debian) hangs its flavor straight off the family.
+	// without an edition or flavor (Debian) hangs its arches straight off
+	// the family.
 	if tree[2].parent != 1 {
 		t.Errorf("Ubuntu amd64 parent = %d, want the Desktop LTS row", tree[2].parent)
 	}
@@ -195,18 +197,25 @@ func TestTreeGroupsFamilyEditionFlavorArch(t *testing.T) {
 			break
 		}
 	}
-	if debian < 0 || len(tree[debian].children) != 1 ||
-		tree[tree[debian].children[0]].label != "GNOME" {
-		t.Errorf("Debian children = %v, want the GNOME flavor below the family", debian)
+	if debian < 0 || len(tree[debian].children) != 2 ||
+		tree[tree[debian].children[0]].arch == "" ||
+		tree[tree[debian].children[0]].label != "amd64" ||
+		tree[tree[debian].children[1]].label != "arm64" {
+		t.Errorf("Debian children = %v, want amd64 and arm64 below the family", debian)
 	}
 }
 
 // TestTreeSkipsListedRowsAndEmptyLevels verifies an identity the drive holds
 // loses its leaf, and a grouping level left with no leaves disappears.
 func TestTreeSkipsListedRowsAndEmptyLevels(t *testing.T) {
-	listed := map[string]bool{
-		flavorKey(iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Arch: "amd64"}): true,
-		flavorKey(iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Arch: "arm64"}): true,
+	listed := map[string]bool{}
+	for _, entry := range iso.Catalog() {
+		if entry.Family != "Ubuntu" {
+			continue
+		}
+		for _, image := range entry.Images() {
+			listed[flavorKey(image)] = true
+		}
 	}
 	tree := buildCatalogTree(listed)
 	if tree[0].label != "Fedora" {
@@ -245,17 +254,17 @@ func TestTreeSpaceTogglesSubtree(t *testing.T) {
 // the node, and unrelated families keep theirs untouched.
 func TestTreeASelectsBelowWithoutClearing(t *testing.T) {
 	m := catalogTestModel(t)
-	m = m.press(t, keySpace())                                  // Ubuntu-wide: everything under it marked
+	m = m.press(t, keySpace()) // Ubuntu-wide: everything under it marked
+	total := m.countLeafTotal(m.visibleCatalog()[0])
 	m = m.press(t, keyRunes('l'), keyRunes('j'), keyRunes('l')) // open Ubuntu, then its edition
 	arm := leafCursor(t, m, "arm64", "Ubuntu", "Desktop LTS")
 	m.treeCursor = arm
-	m = m.press(t, keySpace()) // clears arm64, leaves amd64 alone
-	if len(m.treeSel) != 1 {
-		t.Errorf("treeSel = %v, want amd64 marked only", m.treeSel)
+	m = m.press(t, keySpace()) // clears arm64, leaves the LTS amd64 alone
+	if len(m.treeSel) != total-1 {
+		t.Errorf("treeSel = %v, want every Ubuntu amd64 leaf marked only", m.treeSel)
 	}
 	m.treeCursor = 0
 	m = m.press(t, keyRunes('a'))
-	total := m.countLeafTotal(0)
 	if len(m.treeSel) != total {
 		t.Errorf("treeSel = %v, want all %d leaves marked after a", m.treeSel, total)
 	}
@@ -267,10 +276,11 @@ func TestTreeASelectsBelowWithoutClearing(t *testing.T) {
 	if mint < 0 {
 		t.Fatal("Linux Mint missing from the tree")
 	}
+	mintLeaves := m.countLeafTotal(m.visibleCatalog()[mint])
 	m.treeCursor = mint
 	m = m.press(t, keyRunes('a'))
-	if got := len(m.treeSel); got != total+1 {
-		t.Errorf("treeSel holds %d marks after marking Mint, want %d", got, total+1)
+	if got := len(m.treeSel); got != total+mintLeaves {
+		t.Errorf("treeSel holds %d marks after marking Mint, want %d", got, total+mintLeaves)
 	}
 }
 
@@ -345,32 +355,34 @@ func TestTreeHOnLeafFoldsItsHost(t *testing.T) {
 }
 
 // TestTreeHOnOpenGroupFoldsItself verifies an open grouping level folds only
-// itself: h on Debian's GNOME flavor closes GNOME, leaving Debian's other
-// content untouched.
+// itself: h on Fedora Workstation's GNOME flavor closes GNOME, leaving the
+// Workstation edition's other content untouched.
 func TestTreeHOnOpenGroupFoldsItself(t *testing.T) {
 	m := catalogTestModel(t)
-	debian := findRow(m, "Debian")
-	if debian < 0 {
-		t.Fatal("Debian missing from the tree")
+	fedora := findRow(m, "Fedora")
+	if fedora < 0 {
+		t.Fatal("Fedora missing from the tree")
 	}
-	m.treeCursor = debian
-	m = m.press(t, keyRunes('l')) // open Debian; GNOME sits straight below
-	flavor := debian + 1
-	if gnome := m.tree[m.visibleCatalog()[flavor]]; gnome.label != "GNOME" || gnome.parent != m.visibleCatalog()[debian] {
-		t.Fatalf("row below Debian = %q, want the GNOME flavor node", gnome.label)
+	m.treeCursor = fedora
+	m = m.press(t, keyRunes('l'))                // open Fedora; Workstation and Silverblue below
+	m = m.press(t, keyRunes('j'), keyRunes('l')) // open Workstation; GNOME and KDE below
+	flavor := fedora + 2                         // GNOME, the first Workstation flavor
+	if gnome := m.tree[m.visibleCatalog()[flavor]]; gnome.label != "GNOME" ||
+		gnome.parent != m.visibleCatalog()[fedora+1] {
+		t.Fatalf("row below Workstation = %q, want the GNOME flavor node", gnome.label)
 	}
 	m = m.press(t, keyRunes('j'), keyRunes('l')) // open the GNOME flavor
 	if leaf := m.tree[m.visibleCatalog()[flavor+1]]; leaf.arch == "" {
 		t.Fatalf("row below GNOME = %q, want an arch leaf", leaf.label)
 	}
-	m.treeCursor = flavor // back on Debian's GNOME node
+	m.treeCursor = flavor // back on Workstation's GNOME node
 	m = m.press(t, keyRunes('h'))
 	if idx := m.treeRow(); m.tree[idx].label != "GNOME" || !m.tree[idx].collapsed {
 		t.Errorf("cursor parked at %q (collapsed = %v), want the folded GNOME node",
 			m.tree[idx].label, m.tree[idx].collapsed)
 	}
-	if m.tree[m.visibleCatalog()[debian]].collapsed {
-		t.Error("h on GNOME folded Debian as well")
+	if m.tree[m.visibleCatalog()[fedora+1]].collapsed {
+		t.Error("h on GNOME folded Workstation as well")
 	}
 }
 
@@ -421,9 +433,8 @@ func TestTreeHStaysWhenASiblingIsOpen(t *testing.T) {
 		t.Fatal("Fedora missing from the tree")
 	}
 	m.treeCursor = fedora
-	m = m.press(t, keyRunes('l'))                               // Fedora open: Workstation, KDE, Silverblue
-	m = m.press(t, keyRunes('j'), keyRunes('j'), keyRunes('l')) // KDE unfolds
-	m = m.press(t, keyRunes('j'), keyRunes('l'))                // Silverblue too
+	m = m.press(t, keyRunes('l'))                               // Fedora open: Workstation, Silverblue
+	m = m.press(t, keyRunes('j'), keyRunes('j'), keyRunes('l')) // Silverblue unfolds
 	m.treeCursor = fedora + 1                                   // folded Workstation
 	m = m.press(t, keyRunes('h'))
 	if idx := m.treeRow(); m.tree[idx].label != "Workstation" {
@@ -438,14 +449,15 @@ func TestTreeHStaysWhenASiblingIsOpen(t *testing.T) {
 // into the manager table as a new resolve-and-download row.
 func TestTreeConfirmQueuesMarkedLeaves(t *testing.T) {
 	m := catalogTestModel(t)
+	ubuntu := m.countLeafTotal(m.visibleCatalog()[0])
 	m = m.press(t, keySpace()) // mark every Ubuntu leaf
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	mm := updated.(model)
 	if mm.mode != modeManager {
 		t.Fatalf("mode = %v after enter, want the manager screen", mm.mode)
 	}
-	if len(mm.rows) != 2 {
-		t.Fatalf("rows = %d, want the two Ubuntu downloads", len(mm.rows))
+	if len(mm.rows) != ubuntu {
+		t.Fatalf("rows = %d, want the %d Ubuntu downloads", len(mm.rows), ubuntu)
 	}
 	for _, row := range mm.rows {
 		if !row.New || row.Current.Family != "Ubuntu" {

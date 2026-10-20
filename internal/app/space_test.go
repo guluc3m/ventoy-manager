@@ -296,6 +296,7 @@ func TestEmptyDriveStillOpensUI(t *testing.T) {
 }
 
 func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
+	listed := flavorKey(iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Version: "24.04.3", Arch: "amd64"})
 	m := model{rows: []Update{
 		{Current: iso.Image{Family: "Ubuntu", Edition: "Desktop LTS", Version: "24.04.3", Arch: "amd64", Filename: "a.iso"}},
 	}}
@@ -310,8 +311,8 @@ func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
 			continue
 		}
 		leaves++
-		if node.image.Family == "Ubuntu" && node.image.Arch == "amd64" {
-			t.Errorf("Ubuntu amd64 offered although the drive holds it (%+v)", node.image)
+		if flavorKey(node.image) == listed {
+			t.Errorf("Ubuntu Desktop LTS amd64 offered although the drive holds it (%+v)", node.image)
 		}
 	}
 	// Every catalog image except the installed Ubuntu amd64 one is offered.

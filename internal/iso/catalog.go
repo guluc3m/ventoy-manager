@@ -49,11 +49,27 @@ type Distribution struct {
 // supports. Order is the order shown by the new-ISO screen.
 var catalog = []Distribution{
 	{
+		// LTS releases ship every even year in April (24.04, 26.04, ...), which
+		// is what keeps them apart from the interim releases in filenames.
 		Family: "Ubuntu", Edition: "Desktop LTS",
 		Arches:   []string{"amd64", "arm64"},
-		Filename: regexp.MustCompile(`(?i)^ubuntu-(?P<version>[0-9]+\.[0-9]+(?:\.[0-9]+)?)-desktop-(?P<arch>amd64|arm64)\.iso$`),
+		Filename: regexp.MustCompile(`(?i)^ubuntu-(?P<version>[0-9][02468]\.04(?:\.[0-9]+)?)-desktop-(?P<arch>amd64|arm64)\.iso$`),
 		Index:    "https://releases.ubuntu.com/",
-		Release:  regexp.MustCompile(`^[0-9]{2}\.04(\.[0-9]+)?/$`),
+		// Desktop arm64 images are only published on cdimage, under a release/
+		// directory inside each version.
+		Indexes:     map[string]string{"arm64": "https://cdimage.ubuntu.com/ubuntu/releases/"},
+		PathsByArch: map[string][]string{"arm64": {"release/"}},
+		Release:     regexp.MustCompile(`^[0-9][02468]\.04(\.[0-9]+)?/$`),
+	},
+	{
+		// Interim releases ship every October plus April of odd years.
+		Family: "Ubuntu", Edition: "Desktop",
+		Arches:      []string{"amd64", "arm64"},
+		Filename:    regexp.MustCompile(`(?i)^ubuntu-(?P<version>(?:[0-9]{2}\.10|[0-9][13579]\.04)(?:\.[0-9]+)?)-desktop-(?P<arch>amd64|arm64)\.iso$`),
+		Index:       "https://releases.ubuntu.com/",
+		Indexes:     map[string]string{"arm64": "https://cdimage.ubuntu.com/ubuntu/releases/"},
+		PathsByArch: map[string][]string{"arm64": {"release/"}},
+		Release:     regexp.MustCompile(`^(?:[0-9]{2}\.10|[0-9][13579]\.04)(\.[0-9]+)?/$`),
 	},
 	{
 		Family: "Fedora", Edition: "Workstation", Flavor: "GNOME",
@@ -65,7 +81,8 @@ var catalog = []Distribution{
 		PathsByArch: map[string][]string{"arm64": {"Workstation/aarch64/iso/"}},
 	},
 	{
-		Family: "Fedora", Edition: "KDE Desktop",
+		// Fedora's KDE image is a spin of Workstation, not a separate edition.
+		Family: "Fedora", Edition: "Workstation", Flavor: "KDE",
 		Arches:      []string{"amd64", "arm64"},
 		Filename:    regexp.MustCompile(`(?i)^Fedora-KDE-Desktop-Live-(?P<version>[0-9]+)(?:-[0-9.]+)?\.(?P<arch>x86_64|aarch64)\.iso$`),
 		Index:       "https://dl.fedoraproject.org/pub/fedora/linux/releases/",
@@ -96,7 +113,7 @@ var catalog = []Distribution{
 		PathsByArch: map[string][]string{"arm64": {"isos/aarch64/"}},
 	},
 	{
-		Family: "Debian", Flavor: "GNOME",
+		Family:   "Debian",
 		Arches:   []string{"amd64", "arm64"},
 		Filename: regexp.MustCompile(`(?i)^debian-(?P<version>[0-9]+(?:\.[0-9]+){1,2})-(?P<arch>amd64|arm64)-DVD-1\.iso$`),
 		Index:    "https://cdimage.debian.org/debian-cd/current/amd64/iso-dvd/",
@@ -108,6 +125,20 @@ var catalog = []Distribution{
 		Family: "Linux Mint", Flavor: "Cinnamon",
 		Arches:   []string{"amd64"},
 		Filename: regexp.MustCompile(`(?i)^linuxmint-(?P<version>[0-9]+\.[0-9]+)-cinnamon-64bit\.iso$`),
+		Index:    "https://mirrors.edge.kernel.org/linuxmint/stable/",
+		Release:  regexp.MustCompile(`^[0-9]+\.[0-9]+/$`),
+	},
+	{
+		Family: "Linux Mint", Flavor: "XFCE",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^linuxmint-(?P<version>[0-9]+\.[0-9]+)-xfce-64bit\.iso$`),
+		Index:    "https://mirrors.edge.kernel.org/linuxmint/stable/",
+		Release:  regexp.MustCompile(`^[0-9]+\.[0-9]+/$`),
+	},
+	{
+		Family: "Linux Mint", Flavor: "MATE",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^linuxmint-(?P<version>[0-9]+\.[0-9]+)-mate-64bit\.iso$`),
 		Index:    "https://mirrors.edge.kernel.org/linuxmint/stable/",
 		Release:  regexp.MustCompile(`^[0-9]+\.[0-9]+/$`),
 	},
@@ -132,20 +163,35 @@ var catalog = []Distribution{
 		Filename: regexp.MustCompile(`(?i)^archlinux-(?P<version>[0-9]{4}\.[0-9]{2}\.[0-9]{2})-x86_64\.iso$`),
 		Index:    "https://geo.mirror.pkgbuild.com/iso/latest/",
 	},
-	{
-		// Artix builds are dated, and the weekly/testing mirrors reuse the same
-		// naming pattern, so the stable mirror (which lists released ISOs only)
-		// is used as the index.
-		Family: "Artix Linux", Edition: "Base", Flavor: "OpenRC",
-		Arches:   []string{"amd64"},
-		Filename: regexp.MustCompile(`(?i)^artix-base-openrc-(?P<version>[0-9]{8})-x86_64\.iso$`),
-		Index:    "https://mirror1.artixlinux.org/iso/",
-	},
+	// Artix publishes each desktop as its own image and builds most of them
+	// per init system. Its graphical images are the default installers, so
+	// they lead the group; base and community follow.
+	//
+	// Artix builds are dated, and weekly/testing mirrors reuse the same
+	// naming pattern, so the stable mirror (which lists released ISOs only)
+	// is used as the index.
+	artix("Graphical", "plasma", "openrc", "Plasma OpenRC"),
+	artix("Graphical", "plasma", "dinit", "Plasma Dinit"),
+	artix("Graphical", "xfce", "openrc", "XFCE OpenRC"),
+	artix("Graphical", "xfce", "dinit", "XFCE Dinit"),
+	artix("Graphical", "lxqt", "runit", "LXQt Runit"),
+	artix("Graphical", "mate", "openrc", "MATE OpenRC"),
+	artix("Graphical", "mate", "dinit", "MATE Dinit"),
+	artix("Graphical", "cinnamon", "openrc", "Cinnamon OpenRC"),
+	artix("Graphical", "cinnamon", "dinit", "Cinnamon Dinit"),
+	artix("Community", "community-gtk", "openrc", "GTK OpenRC"),
+	artix("Community", "community-qt", "openrc", "Qt OpenRC"),
+	artix("Base", "base", "openrc", "OpenRC"),
+	artix("Base", "base", "runit", "Runit"),
+	artix("Base", "base", "dinit", "Dinit"),
+	artix("Base", "base", "s6", "s6"),
 	{
 		Family: "openSUSE", Edition: "Tumbleweed",
 		Arches:   []string{"amd64", "arm64"},
 		Filename: regexp.MustCompile(`(?i)^openSUSE-Tumbleweed-DVD-(?P<arch>x86_64|aarch64)-Snapshot(?P<version>[0-9]+)-Media\.iso$`),
 		Index:    "https://download.opensuse.org/tumbleweed/iso/",
+		// arm64 images live on the separate ports tree.
+		Indexes: map[string]string{"arm64": "https://download.opensuse.org/ports/aarch64/tumbleweed/iso/"},
 	},
 	{
 		Family: "openSUSE", Edition: "Leap",
@@ -230,6 +276,21 @@ var catalog = []Distribution{
 		Index:   "https://sourceforge.net/projects/gparted/files/gparted-live-stable/",
 		Release: regexp.MustCompile(`(?i)/gparted-live-stable/[0-9]+(?:\.[0-9]+)+-[0-9]+/$`),
 	},
+}
+
+// artix returns the catalog entry for one Artix image variant. Artix names its
+// images after the desktop (or the base/community variant) and the init
+// system, so the two tokens identify the file and form the flavor label.
+func artix(edition, variant, init, flavor string) Distribution {
+	return Distribution{
+		Family:  "Artix Linux",
+		Edition: edition,
+		Flavor:  flavor,
+		Arches:  []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^artix-` + variant + `-` + init +
+			`-(?P<version>[0-9]{8})-x86_64\.iso$`),
+		Index: "https://mirror1.artixlinux.org/iso/",
+	}
 }
 
 // Catalog returns every supported distribution in display order.
