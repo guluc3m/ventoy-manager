@@ -177,6 +177,52 @@ func TestLoadConfigLeavesFreshDrivesUntouched(t *testing.T) {
 	}
 }
 
+// TestPickVentoyDirWithoutDrivesFailsInsteadOfGuessing verifies that an empty
+// discovery result is an error naming --ventoy-dir, never a relative path in
+// the working directory.
+func TestPickVentoyDirWithoutDrivesFailsInsteadOfGuessing(t *testing.T) {
+	dir, err := pickVentoyDir(nil, false)
+	if err == nil {
+		t.Fatalf("pickVentoyDir(nil) = %q, want an error", dir)
+	}
+	if dir != "" {
+		t.Errorf("pickVentoyDir(nil) returned %q, want no directory", dir)
+	}
+	for _, want := range []string{"no Ventoy drives", "--ventoy-dir"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+// TestPickVentoyDirSingleDriveIsAutomatic verifies one mounted drive needs no
+// prompt or flag.
+func TestPickVentoyDirSingleDriveIsAutomatic(t *testing.T) {
+	drive := Drive{Mount: "/run/media/u/Ventoy", Name: "sda", Dir: "/run/media/u/Ventoy/ventoy"}
+	dir, err := pickVentoyDir([]Drive{drive}, false)
+	if err != nil || dir != drive.Dir {
+		t.Fatalf("pickVentoyDir(one) = %q, %v; want %q", dir, err, drive.Dir)
+	}
+}
+
+// TestPickVentoyDirMultipleDrivesNeedsAChoice verifies --yes refuses to pick
+// among several drives instead of guessing.
+func TestPickVentoyDirMultipleDrivesNeedsAChoice(t *testing.T) {
+	drives := []Drive{
+		{Mount: "/run/media/u/Ventoy", Name: "sda", Dir: "/run/media/u/Ventoy/ventoy"},
+		{Mount: "/run/media/u/Ventoy1", Name: "sdb", Dir: "/run/media/u/Ventoy1/ventoy"},
+	}
+	dir, err := pickVentoyDir(drives, true)
+	if err == nil {
+		t.Fatalf("pickVentoyDir(two, yes) = %q, want an error", dir)
+	}
+	for _, want := range []string{"/run/media/u/Ventoy", "/run/media/u/Ventoy1", "--ventoy-dir"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
 func TestChooseDriveReportsCancelOnQ(t *testing.T) {
 	drives := []Drive{{Mount: "/m", Name: "sda", Dir: "/m/ventoy", Size: 1 << 30, Free: 1, ISOs: 0}}
 	if _, err := chooseDrive(drives, strings.NewReader("q"), &strings.Builder{}); err == nil {

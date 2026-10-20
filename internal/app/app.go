@@ -83,11 +83,11 @@ type Update struct {
 func Run(ventoyDir string, explicit, yes, keepOld bool) error {
 	discovered := false
 	if !explicit {
-		resolved, found, err := selectVentoyDir(yes)
+		resolved, err := selectVentoyDir(yes)
 		if err != nil {
 			return err
 		}
-		ventoyDir, discovered = resolved, found
+		ventoyDir, discovered = resolved, true
 	}
 	ventoyDir, _ = filepath.Abs(ventoyDir)
 	cfg, err := loadConfig(ventoyDir, discovered)

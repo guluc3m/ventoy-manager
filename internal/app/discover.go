@@ -106,30 +106,30 @@ func countISOs(root string) int {
 
 // selectVentoyDir resolves the drive to update when --ventoy-dir was omitted:
 // the single mounted drive is used automatically, several trigger a prompt, and
-// none falls back to a relative ventoy directory next to the working directory.
-// The second result reports whether the directory belongs to a discovered
-// Ventoy drive rather than the fallback path.
-func selectVentoyDir(yes bool) (string, bool, error) {
-	drives := Discover(os.Getenv("USER"))
+// none is an error pointing at --ventoy-dir. It never guesses a directory
+// relative to the working directory.
+func selectVentoyDir(yes bool) (string, error) {
+	return pickVentoyDir(Discover(os.Getenv("USER")), yes)
+}
+
+// pickVentoyDir applies the selection policy from selectVentoyDir to an
+// already discovered set of drives.
+func pickVentoyDir(drives []Drive, yes bool) (string, error) {
 	switch len(drives) {
 	case 0:
-		return "ventoy", false, nil
+		return "", errors.New("no Ventoy drives were found; pass --ventoy-dir to specify the drive to manage")
 	case 1:
-		return drives[0].Dir, true, nil
+		return drives[0].Dir, nil
 	}
 	if yes {
 		mounts := make([]string, len(drives))
 		for i, d := range drives {
 			mounts[i] = d.Mount
 		}
-		return "", false, fmt.Errorf("multiple Ventoy drives are mounted (%s); pass --ventoy-dir to choose one",
+		return "", fmt.Errorf("multiple Ventoy drives are mounted (%s); pass --ventoy-dir to choose one",
 			strings.Join(mounts, ", "))
 	}
-	dir, err := chooseDrive(drives, os.Stdin, os.Stdout)
-	if err != nil {
-		return "", false, err
-	}
-	return dir, true, nil
+	return chooseDrive(drives, os.Stdin, os.Stdout)
 }
 
 // chooseDrive asks which of several mounted drives to update, via bubbletea:
