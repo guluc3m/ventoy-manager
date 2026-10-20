@@ -26,11 +26,25 @@ func TestParseArchitectures(t *testing.T) {
 		"ubuntu-26.04.1-desktop-arm64.iso":                           {"arm64", "26.04.1"},
 		"Fedora-Workstation-Live-44-1.2.x86_64.iso":                  {"amd64", "44"},
 		"Fedora-Workstation-Live-44-1.2.aarch64.iso":                 {"arm64", "44"},
+		"Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso":                  {"amd64", "44"},
+		"Fedora-KDE-Desktop-Live-44-1.7.aarch64.iso":                 {"arm64", "44"},
+		"Fedora-Silverblue-ostree-x86_64-44-1.7.iso":                 {"amd64", "44"},
+		"Fedora-Silverblue-ostree-aarch64-44-1.7.iso":                {"arm64", "44"},
+		"Rocky-10.2-x86_64-dvd1.iso":                                 {"amd64", "10.2"},
+		"Rocky-10.2-aarch64-dvd1.iso":                                {"arm64", "10.2"},
+		"Rocky-9.8-x86_64-dvd.iso":                                   {"amd64", "9.8"},
+		"MX-25.3_Xfce_x64.iso":                                       {"amd64", "25.3"},
+		"artix-base-openrc-20260813-x86_64.iso":                      {"amd64", "20260813"},
+		"manjaro-xfce-26.1.0-260812-linux71.iso":                     {"amd64", "26.1.0"},
+		"manjaro-gnome-26.1.0-260812-linux71.iso":                    {"amd64", "26.1.0"},
 		"debian-13.1.0-arm64-DVD-1.iso":                              {"arm64", "13.1.0"},
 		"openSUSE-Tumbleweed-DVD-aarch64-Snapshot20260101-Media.iso": {"arm64", "20260101"},
 		"Leap-16.0-offline-installer-aarch64.install.iso":            {"arm64", "16.0"},
 		"openSUSE-Leap-15.6-DVD-aarch64-Media.iso":                   {"arm64", "15.6"},
 		"linuxmint-22.3-cinnamon-64bit.iso":                          {"amd64", "22.3"},
+		"EndeavourOS_Titan-Nova-2026.08.15.iso":                      {"amd64", "2026.08.15"},
+		"cachyos-desktop-linux-260809.iso":                           {"amd64", "260809"},
+		"shredos-2025.11_31_x86-64_v0.42_20260716.iso":               {"amd64", "20260716"},
 	}
 	for name, want := range cases {
 		image, ok := Parse(name)
@@ -117,8 +131,8 @@ func TestCatalog(t *testing.T) {
 	if first := entries[0].Image(); first.Family != "Ubuntu" || first.Edition != "Desktop LTS" {
 		t.Errorf("first entry = %+v, want Ubuntu Desktop LTS", first)
 	}
-	if last := entries[len(entries)-1].Image(); last.Flavor != "KDE" {
-		t.Errorf("last entry flavor = %q, want KDE", last.Flavor)
+	if last := entries[len(entries)-1].Image(); last.Family != "GParted Live" {
+		t.Errorf("last entry = %+v, want GParted Live", last)
 	}
 	opensuse := 0
 	for _, entry := range entries {
@@ -139,13 +153,26 @@ func TestCatalogParsesEveryImage(t *testing.T) {
 		"Ubuntu arm64":   "ubuntu-26.04.1-desktop-arm64.iso",
 		"Fedora":         "Fedora-Workstation-Live-44-1.2.x86_64.iso",
 		"Fedora arm64":   "Fedora-Workstation-Live-44-1.2.aarch64.iso",
+		"Fedora KDE":     "Fedora-KDE-Desktop-Live-44-1.7.x86_64.iso",
+		"Silverblue":     "Fedora-Silverblue-ostree-x86_64-44-1.7.iso",
+		"Rocky":          "Rocky-10.2-x86_64-dvd1.iso",
 		"Debian":         "debian-13.1.0-amd64-DVD-1.iso",
 		"Debian arm64":   "debian-13.1.0-arm64-DVD-1.iso",
+		"MX":             "MX-25.3_Xfce_x64.iso",
 		"Tails":          "tails-amd64-7.2.iso",
 		"Manjaro":        "manjaro-kde-25.1.0-250101-linux612.iso",
+		"Manjaro XFCE":   "manjaro-xfce-25.1.0-250101-linux612.iso",
+		"Manjaro GNOME":  "manjaro-gnome-25.1.0-250101-linux612.iso",
 		"Arch":           "archlinux-2026.01.01-x86_64.iso",
+		"Artix":          "artix-base-openrc-20260813-x86_64.iso",
 		"openSUSE":       "Leap-16.0-offline-installer-x86_64.install.iso",
 		"openSUSE arm64": "Leap-16.0-offline-installer-aarch64.install.iso",
+		"EndeavourOS":    "EndeavourOS_Titan-Nova-2026.08.15.iso",
+		"Nobara":         "Nobara-44-Official-2026-09-02.iso",
+		"CachyOS":        "cachyos-desktop-linux-260809.iso",
+		"Omarchy":        "omarchy-4.0.4.iso",
+		"ShredOS":        "shredos-2025.11_31_x86-64_v0.42_20260716.iso",
+		"GParted Live":   "gparted-live-1.7.0-8-amd64.iso",
 	}
 	for name, filename := range samples {
 		image, ok := Parse(filename)

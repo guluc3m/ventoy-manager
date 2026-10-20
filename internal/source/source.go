@@ -81,11 +81,20 @@ func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, dist
 	if err != nil {
 		return Candidate{}, err
 	}
+	// Release links may be bare directory names (mirror listings), relative
+	// paths, or absolute URLs (SourceForge), so each is resolved before use.
+	seen := map[string]bool{}
 	var dirs []string
 	for _, link := range links {
-		if distribution.Release.MatchString(link) {
-			dirs = append(dirs, link)
+		if !distribution.Release.MatchString(link) {
+			continue
 		}
+		release := resolveLink(root, link)
+		if seen[release] {
+			continue
+		}
+		seen[release] = true
+		dirs = append(dirs, release)
 	}
 	if len(dirs) == 0 {
 		return Candidate{}, fmt.Errorf("no release directories found at %s", root)
@@ -95,7 +104,7 @@ func (r *Resolver) latestReleaseDirectory(ctx context.Context, root string, dist
 	var lastErr error
 	for i := len(dirs) - 1; i >= 0; i-- {
 		for _, releasePath := range paths {
-			candidate, err := r.latestListing(ctx, root+dirs[i]+releasePath, distribution, arch)
+			candidate, err := r.latestListing(ctx, dirs[i]+releasePath, distribution, arch)
 			if err == nil {
 				return candidate, nil
 			}
@@ -111,14 +120,29 @@ func (r *Resolver) latestListing(ctx context.Context, index string, distribution
 	if err != nil {
 		return Candidate{}, err
 	}
-	var images []iso.Image
+	type listing struct {
+		image iso.Image
+		link  string
+	}
+	var images []listing
+	seen := map[string]bool{}
 	for _, link := range links {
-		if image, ok := distribution.Parse(path.Base(link)); ok {
-			if arch != "" && image.Arch != arch {
-				continue
-			}
-			images = append(images, image)
+		name := linkName(link)
+		image, ok := distribution.Parse(name)
+		if !ok {
+			continue
 		}
+		if arch != "" && image.Arch != arch {
+			continue
+		}
+		// Download pages such as EndeavourOS's list the same ISO once per
+		// mirror; keep the first so the chosen URL stays the project's lead
+		// mirror rather than the last one mentioned.
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		images = append(images, listing{image: image, link: link})
 	}
 	if len(images) == 0 {
 		if arch != "" {
@@ -130,22 +154,49 @@ func (r *Resolver) latestListing(ctx context.Context, index string, distribution
 	// would otherwise poison the numeric runs (26.04.1 vs 26.04 amd64).
 	// For equal versions, prefer the unqualified alias (e.g. the Leap image
 	// without a Build suffix) so the reported filename stays stable.
-	sort.Slice(images, func(i, j int) bool {
-		if c := CompareVersions(images[i].Version, images[j].Version); c != 0 {
+	sort.SliceStable(images, func(i, j int) bool {
+		if c := CompareVersions(images[i].image.Version, images[j].image.Version); c != 0 {
 			return c < 0
 		}
-		ri, rj := filenameRank(images[i].Filename), filenameRank(images[j].Filename)
+		ri, rj := filenameRank(images[i].image.Filename), filenameRank(images[j].image.Filename)
 		if ri != rj {
 			return ri > rj
 		}
-		return images[i].Filename < images[j].Filename
+		return images[i].image.Filename < images[j].image.Filename
 	})
 	image := images[len(images)-1]
-	base, _ := url.Parse(index)
-	ref, _ := url.Parse(image.Filename)
-	resolved := base.ResolveReference(ref).String()
+	resolved := resolveLink(index, image.link)
 	published, size := r.probe(ctx, resolved)
-	return Candidate{Image: image, URL: resolved, Published: published, Size: size}, nil
+	return Candidate{Image: image.image, URL: resolved, Published: published, Size: size}, nil
+}
+
+// linkName is the file name a release page link points at. SourceForge
+// appends a /download suffix to its file links, so there the name sits one
+// path segment earlier.
+func linkName(link string) string {
+	ref, err := url.Parse(link)
+	if err != nil {
+		return path.Base(link)
+	}
+	if name := path.Base(ref.Path); name != "download" {
+		return name
+	}
+	return path.Base(path.Dir(ref.Path))
+}
+
+// resolveLink turns a page link into an absolute URL. Links may be bare
+// filenames (mirror directory listings), relative paths, or absolute mirror
+// URLs (download pages such as EndeavourOS's).
+func resolveLink(index, link string) string {
+	base, err := url.Parse(index)
+	if err != nil {
+		return link
+	}
+	ref, err := url.Parse(link)
+	if err != nil {
+		return link
+	}
+	return base.ResolveReference(ref).String()
 }
 
 // probe reads the mirror's Last-Modified timestamp and advertised size for the
@@ -175,7 +226,9 @@ func (r *Resolver) metadata(ctx context.Context, method, address string) (time.T
 	}
 	defer resp.Body.Close()
 	t, _ := http.ParseTime(resp.Header.Get("Last-Modified"))
-	if resp.ContentLength <= 0 {
+	// Redirect services (SourceForge) answer with an HTML interstitial whose
+	// length says nothing about the ISO, so only a binary response counts.
+	if resp.ContentLength <= 0 || strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 		return t, 0
 	}
 	if method == http.MethodHead {
@@ -209,7 +262,9 @@ func AgeSuffix(published, now time.Time) string {
 	}
 }
 
-// links extracts href values from an official directory or release page.
+// links extracts candidate URLs from an official directory or release page.
+// Most pages use href, but some download pages (Nobara) carry the image URL in
+// a data-url attribute on the Download button instead.
 func (r *Resolver) links(ctx context.Context, address string) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
 	if err != nil {
@@ -227,7 +282,7 @@ func (r *Resolver) links(ctx context.Context, address string) ([]string, error) 
 	if err != nil {
 		return nil, err
 	}
-	re := regexp.MustCompile(`(?i)href=["']([^"']+)["']`)
+	re := regexp.MustCompile(`(?i)(?:href|data-url)=["']([^"']+)["']`)
 	var links []string
 	for _, m := range re.FindAllStringSubmatch(string(body), -1) {
 		links = append(links, strings.TrimPrefix(m[1], "./"))

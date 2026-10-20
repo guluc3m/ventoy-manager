@@ -312,10 +312,14 @@ func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
 	if len(mm.catalog) == 0 || mm.catalog[0].Family != "Ubuntu" || mm.catalog[0].Arch != "arm64" {
 		t.Errorf("first offer = %+v, want Ubuntu arm64", mm.catalog)
 	}
-	// The catalog has 14 images across its nine entries; only the installed
-	// Ubuntu amd64 image is hidden.
-	if len(mm.catalog) != 13 {
-		t.Errorf("len(offers) = %d, want 13", len(mm.catalog))
+	// Every catalog image except the installed Ubuntu amd64 one is offered.
+	offers := 0
+	for _, entry := range iso.Catalog() {
+		offers += len(entry.Images())
+	}
+	offers-- // Ubuntu amd64 is already on the drive
+	if len(mm.catalog) != offers {
+		t.Errorf("len(offers) = %d, want %d", len(mm.catalog), offers)
 	}
 }
 

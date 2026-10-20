@@ -3,8 +3,12 @@ package app
 import (
 	"errors"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/guluc3m/ventoy-updater/internal/iso"
+	"github.com/guluc3m/ventoy-updater/internal/source"
 )
 
 // TestApplyCompletionQuits verifies the TUI leaves the alternate screen once the
@@ -28,6 +32,40 @@ func TestApplyCompletionQuits(t *testing.T) {
 	}
 	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
 		t.Errorf("command produced %T, want tea.QuitMsg", cmd())
+	}
+}
+
+// TestResolveJobsCompletionFollowsResults verifies the check producer closes
+// the result channel without sending resolveClosed itself. Completion must be
+// observed by listenResolve after the last resolveResult; an earlier signal
+// would stop the check before the final row's answer is applied, leaving that
+// row displaying "?" as though it were never checked.
+func TestResolveJobsCompletionFollowsResults(t *testing.T) {
+	results := make(chan resolveResult)
+	m := model{resCh: results, resolver: source.New()}
+	// An unsupported family makes Latest fail immediately, without network.
+	jobs := []resolveJob{{index: 0, img: iso.Image{Family: "not-a-distribution"}}}
+	done := make(chan tea.Msg, 1)
+	go func() { done <- m.resolveJobsCmd(jobs)() }()
+
+	select {
+	case result := <-results:
+		if result.index != 0 || result.err == nil {
+			t.Errorf("result = %+v, want the failed resolution for row 0", result)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no resolveResult produced")
+	}
+	select {
+	case msg := <-done:
+		if _, premature := msg.(resolveClosed); premature {
+			t.Fatal("resolveJobsCmd signalled completion before the listener drained results")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("resolveJobsCmd did not finish")
+	}
+	if _, open := <-results; open {
+		t.Fatal("result channel is still open after resolution finished")
 	}
 }
 

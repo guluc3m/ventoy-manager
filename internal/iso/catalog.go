@@ -65,6 +65,37 @@ var catalog = []Distribution{
 		PathsByArch: map[string][]string{"arm64": {"Workstation/aarch64/iso/"}},
 	},
 	{
+		Family: "Fedora", Edition: "KDE Desktop",
+		Arches:      []string{"amd64", "arm64"},
+		Filename:    regexp.MustCompile(`(?i)^Fedora-KDE-Desktop-Live-(?P<version>[0-9]+)(?:-[0-9.]+)?\.(?P<arch>x86_64|aarch64)\.iso$`),
+		Index:       "https://dl.fedoraproject.org/pub/fedora/linux/releases/",
+		Release:     regexp.MustCompile(`^[0-9]+/$`),
+		Path:        "KDE/x86_64/iso/",
+		PathsByArch: map[string][]string{"arm64": {"KDE/aarch64/iso/"}},
+	},
+	{
+		// Silverblue is an Atomic Desktop image: its filename puts the
+		// architecture before the release number.
+		Family: "Fedora", Edition: "Silverblue",
+		Arches:      []string{"amd64", "arm64"},
+		Filename:    regexp.MustCompile(`(?i)^Fedora-Silverblue-ostree-(?P<arch>x86_64|aarch64)-(?P<version>[0-9]+)(?:-[0-9.]+)?\.iso$`),
+		Index:       "https://dl.fedoraproject.org/pub/fedora/linux/releases/",
+		Release:     regexp.MustCompile(`^[0-9]+/$`),
+		Path:        "Silverblue/x86_64/iso/",
+		PathsByArch: map[string][]string{"arm64": {"Silverblue/aarch64/iso/"}},
+	},
+	{
+		// Rocky publishes each point release under its own directory. Bare
+		// major-version directories (10/) hold repositories, not images.
+		Family:      "Rocky Linux",
+		Arches:      []string{"amd64", "arm64"},
+		Filename:    regexp.MustCompile(`(?i)^Rocky-(?P<version>[0-9]+\.[0-9]+)-(?P<arch>x86_64|aarch64)-dvd1?\.iso$`),
+		Index:       "https://dl.rockylinux.org/pub/rocky/",
+		Release:     regexp.MustCompile(`^[0-9]+\.[0-9]+/$`),
+		Path:        "isos/x86_64/",
+		PathsByArch: map[string][]string{"arm64": {"isos/aarch64/"}},
+	},
+	{
 		Family: "Debian", Flavor: "GNOME",
 		Arches:   []string{"amd64", "arm64"},
 		Filename: regexp.MustCompile(`(?i)^debian-(?P<version>[0-9]+(?:\.[0-9]+){1,2})-(?P<arch>amd64|arm64)-DVD-1\.iso$`),
@@ -81,6 +112,14 @@ var catalog = []Distribution{
 		Release:  regexp.MustCompile(`^[0-9]+\.[0-9]+/$`),
 	},
 	{
+		Family: "MX Linux", Flavor: "XFCE",
+		Arches: []string{"amd64"},
+		// Each edition has its own SourceForge folder; the regular Xfce image
+		// is the flagship, and the "ahs" hardware-support build is excluded.
+		Filename: regexp.MustCompile(`(?i)^MX-(?P<version>[0-9]+(?:\.[0-9]+)?)_Xfce_x64\.iso$`),
+		Index:    "https://sourceforge.net/projects/mx-linux/files/Final/Xfce/",
+	},
+	{
 		Family:   "Tails OS",
 		Arches:   []string{"amd64"},
 		Filename: regexp.MustCompile(`(?i)^tails-(?P<arch>amd64)-(?P<version>[0-9]+(?:\.[0-9]+)+)\.iso$`),
@@ -92,6 +131,15 @@ var catalog = []Distribution{
 		Arches:   []string{"amd64"},
 		Filename: regexp.MustCompile(`(?i)^archlinux-(?P<version>[0-9]{4}\.[0-9]{2}\.[0-9]{2})-x86_64\.iso$`),
 		Index:    "https://geo.mirror.pkgbuild.com/iso/latest/",
+	},
+	{
+		// Artix builds are dated, and the weekly/testing mirrors reuse the same
+		// naming pattern, so the stable mirror (which lists released ISOs only)
+		// is used as the index.
+		Family: "Artix Linux", Edition: "Base", Flavor: "OpenRC",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^artix-base-openrc-(?P<version>[0-9]{8})-x86_64\.iso$`),
+		Index:    "https://mirror1.artixlinux.org/iso/",
 	},
 	{
 		Family: "openSUSE", Edition: "Tumbleweed",
@@ -114,6 +162,73 @@ var catalog = []Distribution{
 		Arches:   []string{"amd64"},
 		Filename: regexp.MustCompile(`(?i)^manjaro-kde-(?P<version>[0-9]+(?:\.[0-9]+){1,2})-[^.]+\.iso$`),
 		Index:    "https://manjaro.org/products/download/x86/",
+	},
+	{
+		Family: "Manjaro", Flavor: "XFCE",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^manjaro-xfce-(?P<version>[0-9]+(?:\.[0-9]+){1,2})-[^.]+\.iso$`),
+		Index:    "https://manjaro.org/products/download/x86/",
+	},
+	{
+		Family: "Manjaro", Flavor: "GNOME",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^manjaro-gnome-(?P<version>[0-9]+(?:\.[0-9]+){1,2})-[^.]+\.iso$`),
+		Index:    "https://manjaro.org/products/download/x86/",
+	},
+	{
+		// The codename changes with every release (Titan-Nova today), so only
+		// the trailing date is stable enough to version on.
+		Family:   "EndeavourOS",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^EndeavourOS_.+-(?P<version>[0-9]{4}\.[0-9]{2}\.[0-9]{2})\.iso$`),
+		// The official page lists the current ISO once per mirror as absolute
+		// links, so the first mirror named there is used.
+		Index: "https://endeavouros.com/download/",
+	},
+	{
+		Family: "Nobara", Edition: "Official",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^Nobara-(?P<version>[0-9]+)-Official-[0-9]{4}-[0-9]{2}-[0-9]{2}\.iso$`),
+		// The download page carries each image in a data-url attribute on its
+		// button rather than an href.
+		Index: "https://nobaraproject.org/download.html",
+	},
+	{
+		Family: "CachyOS", Flavor: "Desktop",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^cachyos-desktop-linux-(?P<version>[0-9]{6})\.iso$`),
+		Index:    "https://mirror.cachyos.org/ISO/desktop/",
+		Release:  regexp.MustCompile(`^[0-9]{6}/$`),
+	},
+	{
+		Family:   "Omarchy",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^omarchy-(?P<version>[0-9]+(?:\.[0-9]+)*)\.iso$`),
+		// The project's page links the current ISO on its own download host.
+		Index: "https://omarchy.org/",
+	},
+	{
+		Family: "ShredOS",
+		Arches: []string{"amd64"},
+		// Releases repeat the upstream tag (2025.11_32_x86-64_v0.43.1) plus a
+		// build date; the date is what advances with every rebuild.
+		Filename: regexp.MustCompile(`(?i)^shredos-[0-9]{4}\.[0-9]{2}_[0-9]+_x86-64_v[0-9.]+_(?P<version>[0-9]{8})\.iso$`),
+		// Upstream publishes GitHub release assets, whose page hides the asset
+		// links behind JavaScript; the exact SourceForge mirror linked from the
+		// project README serves a plain, crawlable listing instead.
+		Index:   "https://sourceforge.net/projects/shredos.mirror/files/",
+		Release: regexp.MustCompile(`(?i)/v?[0-9]{4}\.[0-9]{2}_[0-9]+_x86-64_[0-9.]+/$`),
+	},
+	{
+		Family:   "GParted Live",
+		Arches:   []string{"amd64"},
+		Filename: regexp.MustCompile(`(?i)^gparted-live-(?P<version>[0-9]+(?:\.[0-9]+)+-[0-9]+)-amd64\.iso$`),
+		// The project page links downloads.sourceforge.net directly, which
+		// answers Go's metadata probes with an HTML interstitial instead of
+		// the file. Listing the SourceForge release directory yields the
+		// /download URL, whose Last-Modified header supplies the age.
+		Index:   "https://sourceforge.net/projects/gparted/files/gparted-live-stable/",
+		Release: regexp.MustCompile(`(?i)/gparted-live-stable/[0-9]+(?:\.[0-9]+)+-[0-9]+/$`),
 	},
 }
 

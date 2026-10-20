@@ -30,9 +30,11 @@ releases, so a new distribution needs exactly one entry there.
    Both are compared to decide which release is newest and which build an
    installed image should follow.
 5. Set `Index` to the official page that lists releases and contains plain
-   `href` links (a directory listing or a static download page). When an
-   architecture lives in a different directory, add its own URL under
-   `Indexes` (Debian does this).
+   links (a directory listing, a static download page, or a page carrying the
+   image URL in a `data-url` attribute). Links are resolved relative to
+   `Index`, so absolute per-mirror URLs and SourceForge `/download` links work
+   too. When an architecture lives in a different directory, add its own URL
+   under `Indexes` (Debian does this).
 6. If releases live in their own subdirectories, also set `Release` to a
    regexp matching those directory names, including the trailing slash as it
    appears in the page's links. Set `Path` when the ISO sits deeper inside the

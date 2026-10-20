@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -238,6 +239,209 @@ func TestLatestOpenSUSELeapBuildOnly(t *testing.T) {
 	}
 	if !strings.Contains(got.URL, "Leap-16.1-offline-installer-x86_64-Build55.2.install.iso") {
 		t.Errorf("URL = %q, want the build-qualified image", got.URL)
+	}
+}
+
+// TestLatestDownloadPageLinksMirrors verifies a distro download page that
+// lists absolute per-mirror URLs (EndeavourOS) resolves to a real mirror URL
+// rather than the page itself, and picks the first mirror listed.
+func TestLatestDownloadPageLinksMirrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(
+			`<a href="https://mirror.example/mirror/iso/EndeavourOS_Titan-Nova-2026.08.15.iso">first</a>` +
+				`<a href="https://mirror.example/mirror/iso/EndeavourOS_Titan-Nova-2026.08.15.iso.sha512sum">sum</a>` +
+				`<a href="https://other.example/endeavouros/iso/EndeavourOS_Titan-Nova-2026.08.15.iso">second</a>`))
+	}))
+	defer server.Close()
+
+	current := iso.Image{Family: "EndeavourOS", Version: "2026.05.01"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "2026.08.15"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if want := "https://mirror.example/mirror/iso/EndeavourOS_Titan-Nova-2026.08.15.iso"; got.URL != want {
+		t.Errorf("URL = %q, want %q", got.URL, want)
+	}
+}
+
+// TestLatestDownloadPageDataURL verifies a download page whose image URL only
+// appears in a data-url attribute (Nobara) is still resolved.
+func TestLatestDownloadPageDataURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(
+			`<a href="https://images.example/Nobara-44-Official-2026-09-02.iso.sha256sum">sum</a>` +
+				`<button class="download-btn" data-iso="Nobara-44-Official-2026-09-02.iso" ` +
+				`data-url="https://images.example/Nobara-44-Official-2026-09-02.iso">Download</button>`))
+	}))
+	defer server.Close()
+
+	current := iso.Image{Family: "Nobara", Edition: "Official", Version: "43"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "https://images.example/Nobara-44-Official-2026-09-02.iso"; got.URL != want {
+		t.Errorf("URL = %q, want %q", got.URL, want)
+	}
+}
+
+// TestLatestCachyOSReleaseDirectories verifies six-digit release directories
+// (CachyOS) resolve like any other per-release layout.
+func TestLatestCachyOSReleaseDirectories(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			_, _ = w.Write([]byte(`<a href="260628/">old</a><a href="260809/">new</a>`))
+		case "/260809/":
+			_, _ = w.Write([]byte(`<a href="cachyos-desktop-linux-260809.iso">iso</a>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	current := iso.Image{Family: "CachyOS", Flavor: "Desktop", Version: "260628"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "260809"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if !strings.HasSuffix(got.URL, "/260809/cachyos-desktop-linux-260809.iso") {
+		t.Errorf("URL = %q, want the CachyOS desktop image", got.URL)
+	}
+}
+
+// TestLatestOmarchyDownloadPage verifies a project page linking its own ISO
+// host resolves the image through the absolute link.
+func TestLatestOmarchyDownloadPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(
+			`<a href="https://iso.example/omarchy-4.0.4.iso">download</a>` +
+				`<a href="https://iso.example/omarchy-4.0.4.iso.sha256">sum</a>`))
+	}))
+	defer server.Close()
+
+	current := iso.Image{Family: "Omarchy", Version: "4.0.2"}
+	got, err := New().withTestRoot(server.URL+"/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "4.0.4"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if want := "https://iso.example/omarchy-4.0.4.iso"; got.URL != want {
+		t.Errorf("URL = %q, want %q", got.URL, want)
+	}
+}
+
+// TestLatestSourceForgeReleaseDirectories verifies a SourceForge mirror's
+// per-release directories (ShredOS) resolve through the page's links and skip
+// the lite build that shares the release's version date.
+func TestLatestSourceForgeReleaseDirectories(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/files/":
+			_, _ = w.Write([]byte(
+				`<a href="/files/v2025.11_31_x86-64_0.42/">old</a>` +
+					`<a href="/files/v2025.11_32_x86-64_0.43.1/">new</a>`))
+		case "/files/v2025.11_32_x86-64_0.43.1/":
+			_, _ = w.Write([]byte(
+				`<a href="/files/v2025.11_32_x86-64_0.43.1/shredos-2025.11_32_x86-64_v0.43.1_20261010_lite.iso/download">lite</a>` +
+					`<a href="/files/v2025.11_32_x86-64_0.43.1/shredos-2025.11_32_x86-64_v0.43.1_20261010.img/download">img</a>` +
+					`<a href="/files/v2025.11_32_x86-64_0.43.1/shredos-2025.11_32_x86-64_v0.43.1_20261010.iso/download">full</a>`))
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	current := iso.Image{Family: "ShredOS", Version: "20260716"}
+	got, err := New().withTestRoot(server.URL+"/files/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "20261010"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	want := server.URL + "/files/v2025.11_32_x86-64_0.43.1/shredos-2025.11_32_x86-64_v0.43.1_20261010.iso/download"
+	if got.URL != want {
+		t.Errorf("URL = %q, want %q", got.URL, want)
+	}
+}
+
+// TestLatestGPartedReportsAge verifies GParted resolves through its SourceForge
+// release directory and keeps the file's Last-Modified date. The project's own
+// download page links downloads.sourceforge.net directly, which serves Go an
+// HTML interstitial without file metadata.
+func TestLatestGPartedReportsAge(t *testing.T) {
+	modified := time.Date(2026, 8, 30, 12, 33, 24, 0, time.UTC)
+	const size = 720371712
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/gparted-live-stable/":
+			_, _ = w.Write([]byte(
+				`<a href="/gparted-live-stable/1.8.1-3/">old</a>` +
+					`<a href="/gparted-live-stable/1.8.1-6/">new</a>`))
+		case "/gparted-live-stable/1.8.1-6/":
+			_, _ = w.Write([]byte(
+				`<a href="/gparted-live-stable/1.8.1-6/gparted-live-1.8.1-6-amd64.iso/download">iso</a>`))
+		case "/gparted-live-stable/1.8.1-6/gparted-live-1.8.1-6-amd64.iso/download":
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Content-Length", strconv.Itoa(size))
+			w.Header().Set("Last-Modified", modified.UTC().Format(http.TimeFormat))
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	current := iso.Image{Family: "GParted Live", Version: "1.8.1-6"}
+	got, err := New().withTestRoot(server.URL+"/gparted-live-stable/").Latest(context.Background(), current)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if want := "1.8.1-6"; got.Image.Version != want {
+		t.Errorf("available version = %q, want %q", got.Image.Version, want)
+	}
+	if !got.Published.Equal(modified) {
+		t.Errorf("published = %v, want %v", got.Published, modified)
+	}
+	if got.Size != size {
+		t.Errorf("size = %d, want %d", got.Size, size)
+	}
+}
+
+// TestProbeIgnoresHTMLInterstitials verifies a redirect service's HTML page
+// length is not mistaken for the ISO size: the ranged GET then supplies the
+// real total through Content-Range.
+func TestProbeIgnoresHTMLInterstitials(t *testing.T) {
+	const size = 700 << 20
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+			w.Header().Set("Content-Length", "147569")
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-0/%d", size))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("x"))
+	}))
+	defer server.Close()
+	if _, got := New().probe(context.Background(), server.URL); got != size {
+		t.Errorf("probe size = %d, want %d", got, size)
 	}
 }
 

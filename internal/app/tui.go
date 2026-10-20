@@ -589,7 +589,10 @@ func (m *model) rebuildRows() {
 }
 
 // resolveJobsCmd runs each resolution sequentially, streaming results through
-// resCh, and closes it once everything is checked.
+// resCh, and closes it once everything is checked. Completion is reported by
+// listenResolve when it observes the closed channel: returning resolveClosed
+// from this command too would race ahead of the final resolveResult, dropping
+// that row's answer and leaving it marked as unchecked.
 func (m model) resolveJobsCmd(jobs []resolveJob) tea.Cmd {
 	ch := m.resCh
 	resolver := m.resolver
@@ -599,7 +602,7 @@ func (m model) resolveJobsCmd(jobs []resolveJob) tea.Cmd {
 			ch <- resolveResult{job.index, candidate, err}
 		}
 		close(ch)
-		return resolveClosed{}
+		return nil
 	}
 }
 
