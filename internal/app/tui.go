@@ -35,11 +35,11 @@ type model struct {
 	spinner   spinner.Model
 	resolver  *source.Resolver
 
-	// mode selects the visible screen: the ISO table or the download catalog.
-	mode          managerMode
-	catalog       []iso.Image
-	catalogSel    map[int]bool
-	catalogCursor int
+	// mode selects the visible screen: the ISO table or the download tree.
+	mode       managerMode
+	tree       []catalogNode   // pre-order rows of the collapsible download tree
+	treeSel    map[string]bool // marked leaf downloads, keyed by flavorKey
+	treeCursor int             // position inside the visible tree rows
 
 	// Apply state, fed by the apply goroutine through progressCh.
 	showUnrecognized bool // whether unrecognized ISO files are listed
@@ -91,7 +91,7 @@ func newModel(dir, root string, rows []Update, capacity space.Space) model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	return model{dir: dir, root: root, rows: rows, space: capacity, spinner: s,
-		resolver: source.New(), catalogSel: map[int]bool{}}
+		resolver: source.New(), treeSel: map[string]bool{}}
 }
 
 // Init supplies no initial asynchronous command for the model.
@@ -195,8 +195,10 @@ func (m model) managerKeys(key string) (tea.Model, tea.Cmd) {
 		}
 	case " ":
 		// With a pending update under the cursor, space toggles the update
-		// download; without one — up to date, unchecked, failed, or an
+		// download; without one — up to date, unchecked, failed, an
 		// unrecognized ISO — space deletes the file instead, matching d.
+		// Catalog rows are additions: space drops them from the list, again
+		// matching d.
 		row := m.cursorRow()
 		if row >= 0 && selectable(m.rows[row]) {
 			m.toggleCursorSelect()
@@ -274,18 +276,26 @@ func (m *model) toggleShowUnrecognized() {
 	}
 }
 
-// selectable reports whether a row's update can be toggled at all.
+// selectable reports whether a row's update can be toggled at all. Catalog
+// rows are additions rather than updates: they are queued already selected
+// and removed as a whole, so they never offer the update toggle.
 func selectable(u Update) bool {
-	if u.Err != nil || u.Latest.Image.Filename == "" {
+	if u.New {
 		return false
 	}
-	if u.New {
-		return true
+	if u.Err != nil || u.Latest.Image.Filename == "" {
+		return false
 	}
 	if u.Current.Family == "" {
 		return false // unrecognized ISOs cannot be matched upstream
 	}
 	return u.Latest.Image.Filename != u.Current.Filename // already up to date?
+}
+
+// downloadable reports whether a row will actually fetch something: it must
+// be selected and have a resolved candidate without an error.
+func downloadable(u Update) bool {
+	return u.Selected && u.Err == nil && u.Latest.Image.Filename != ""
 }
 
 // toggleCursorSelect flips the highlighted row's update selection; selecting
@@ -303,10 +313,11 @@ func (m *model) toggleCursorSelect() {
 	m.rows[row].DeleteISO = false
 }
 
-// toggleSelectAll is the one-keystroke update-all path: every simultaneously
-// selectable row — pending updates and queued catalog downloads alike — is
-// selected (all-selected runs deselect everything again). Applying still
-// waits for enter on purpose, so the batch stays reviewable.
+// toggleSelectAll is the one-keystroke update-all path: every row offering an
+// update is selected (all-selected runs deselect everything again). Queued
+// catalog additions are left alone: they are already selected and have no
+// update toggle. Applying still waits for enter on purpose, so the batch stays
+// reviewable.
 func (m *model) toggleSelectAll() {
 	all := true
 	for _, u := range m.rows {
@@ -363,8 +374,8 @@ func (m *model) toggleCursorKeep() {
 }
 
 // toggleCursorDelete marks the highlighted ISO for deletion without
-// replacement — recognized or unrecognized alike — or drops a catalog row
-// that has nothing to delete yet.
+// replacement — recognized or unrecognized alike — or drops a queued catalog
+// addition that has nothing to delete yet.
 func (m model) toggleCursorDelete() (tea.Model, tea.Cmd) {
 	row := m.cursorRow()
 	if row < 0 {
@@ -403,10 +414,11 @@ func (m model) startCheck() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// openCatalog shows the built-in distribution catalog for new downloads,
-// skipping every distribution the manager already lists — installed on the
-// drive or queued for download. The catalog is the same one the source
-// resolver and ISO parser use, so new distributions need only one entry.
+// openCatalog shows the built-in distribution catalog as a collapsible
+// tree for new downloads, skipping every distribution the manager already
+// lists — installed on the drive or queued for download. The catalog is the
+// same one the source resolver and ISO parser use, so new distributions need
+// only one entry.
 func (m model) openCatalog() (tea.Model, tea.Cmd) {
 	if m.checking || m.applying {
 		return m, nil
@@ -417,18 +429,10 @@ func (m model) openCatalog() (tea.Model, tea.Cmd) {
 			listed[flavorKey(u.Current)] = true
 		}
 	}
-	var visible []iso.Image
-	for _, entry := range iso.Catalog() {
-		for _, image := range entry.Images() {
-			if !listed[flavorKey(image)] {
-				visible = append(visible, image)
-			}
-		}
-	}
-	m.catalog = visible
+	m.tree = buildCatalogTree(listed)
 	m.mode = modeCatalog
-	m.catalogCursor = 0
-	m.catalogSel = map[int]bool{}
+	m.treeCursor = 0
+	m.treeSel = map[string]bool{}
 	return m, nil
 }
 
@@ -446,7 +450,7 @@ func flavorKey(i iso.Image) string {
 func (m model) startApply() (tea.Model, tea.Cmd) {
 	anything := false
 	for _, u := range m.rows {
-		if u.DeleteISO || selectable(u) && u.Selected {
+		if u.DeleteISO || downloadable(u) {
 			anything = true
 			break
 		}
@@ -463,16 +467,17 @@ func (m model) startApply() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.spinner.Tick, listenProgress(m.progressCh), m.applyCmd(ctx))
 }
 
-// openCatalogRows copies the catalog's marked entries into the row table and
-// resolves each one before the download really starts.
+// confirmCatalog queues every marked tree leaf as a manager row, selected so
+// the projected usage counts it, and resolves each one before the download
+// really starts.
 func (m model) confirmCatalog() (tea.Model, tea.Cmd) {
 	var jobs []resolveJob
-	for n, entry := range m.catalog {
-		if !m.catalogSel[n] {
+	for _, node := range m.tree {
+		if node.arch == "" || !m.treeSel[flavorKey(node.image)] {
 			continue
 		}
-		m.rows = append(m.rows, Update{Current: entry, New: true})
-		jobs = append(jobs, resolveJob{len(m.rows) - 1, entry})
+		m.rows = append(m.rows, Update{Current: node.image, New: true, Selected: true})
+		jobs = append(jobs, resolveJob{len(m.rows) - 1, node.image})
 	}
 	m.mode = modeManager
 	if len(jobs) == 0 {
@@ -483,7 +488,10 @@ func (m model) confirmCatalog() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.spinner.Tick, listenResolve(m.resCh), m.resolveJobsCmd(jobs))
 }
 
-// catalogUpdate handles keys in the download-catalog screen.
+// catalogUpdate handles keys in the download-catalog tree: j/k moves the
+// cursor, h and l fold grouping levels, space toggles everything under the
+// node, a selects all the distros below it, and enter queues the marked
+// downloads back into the manager table.
 func (m model) catalogUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	key, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -492,29 +500,44 @@ func (m model) catalogUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch key.String() {
 	case "q", "esc", "ctrl+c":
 		m.mode = modeManager
-	case "up":
-		if m.catalogCursor > 0 {
-			m.catalogCursor--
+	case "up", "k":
+		if m.treeCursor > 0 {
+			m.treeCursor--
 		}
-	case "down":
-		if m.catalogCursor < len(m.catalog)-1 {
-			m.catalogCursor++
+	case "down", "j":
+		if m.treeCursor < len(m.visibleCatalog())-1 {
+			m.treeCursor++
 		}
-	case " ", "x":
-		n := m.catalogCursor
-		if n < len(m.catalog) {
-			m.catalogSel[n] = !m.catalogSel[n]
-		}
-	case "a":
-		all := true
-		for n := range m.catalog {
-			if !m.catalogSel[n] {
-				all = false
-				break
+	case "h", "left":
+		if idx := m.treeRow(); idx >= 0 {
+			// Leaves close the submenu hosting them — e.g. Rocky Linux amd64
+			// closes the Rocky Linux submenu. An open grouping level folds
+			// itself first; once its whole level sits folded, h climbs to the
+			// node above instead.
+			climb := len(m.tree[idx].children) == 0 ||
+				(m.tree[idx].collapsed && m.levelCollapsed(idx))
+			fold := m.tree[idx].parent
+			if !climb || fold < 0 {
+				fold = idx // family roots have no host above them
+			}
+			if len(m.tree[fold].children) > 0 {
+				m.tree[fold].collapsed = true // the cursor lands on the fold
+				if pos, ok := m.catalogPosition(fold); ok {
+					m.treeCursor = pos
+				}
 			}
 		}
-		for n := range m.catalog {
-			m.catalogSel[n] = !all
+	case "l", "right":
+		if idx := m.treeRow(); idx >= 0 {
+			m.tree[idx].collapsed = false
+		}
+	case " ":
+		if idx := m.treeRow(); idx >= 0 {
+			m.toggleSubtree(idx)
+		}
+	case "a":
+		if idx := m.treeRow(); idx >= 0 {
+			m.markSubtree(idx, true)
 		}
 	case "enter":
 		return m.confirmCatalog()
@@ -522,11 +545,201 @@ func (m model) catalogUpdate(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// checkedOrder implements the table ordering after an update check: ISOs
-// with pending updates lead the table — freshest pending release first —
-// then the remainder by release age (dated before undated), unrecognized
-// files always trailing.
+// catalogNode is one row of the collapsible download tree: the top level
+// lists distribution families, below that editions, then flavors, and the
+// leaves prompt for the architecture of the actual download. Rows live in a
+// flat pre-order slice; grouping levels carry no identity of their own, so
+// their selection state is derived from the leaves beneath them.
+type catalogNode struct {
+	label     string    // display name of this family, edition, flavor, or arch
+	arch      string    // image architecture; non-empty on leaves only
+	image     iso.Image // downloadable identity, set on leaves
+	parent    int       // index of the parent row, -1 on family roots
+	children  []int     // child row indexes, in display order
+	collapsed bool      // whether this grouping level hides its children
+}
+
+// buildCatalogTree groups the available catalog distributions family →
+// edition → flavor → architecture. Every distro named in listed is already
+// on the drive or queued, so its leaf is skipped and grouping levels that
+// end up with no leaf never appear. Levels that a distribution does not
+// carry collapse away: a distro without an edition hangs its flavors
+// straight off the family, and one without either hangs its arches directly.
+// The tree opens showing only the distribution names; every grouping level
+// waits folded until the user unfolds it.
+func buildCatalogTree(listed map[string]bool) []catalogNode {
+	tree := []catalogNode{}
+	attach := func(parent int, label string) int {
+		tree = append(tree, catalogNode{label: label, parent: parent, collapsed: true})
+		child := len(tree) - 1
+		if parent >= 0 {
+			tree[parent].children = append(tree[parent].children, child)
+		}
+		return child
+	}
+	familyAt, editionAt, flavorAt := map[string]int{}, map[string]int{}, map[string]int{}
+	leafSeen := map[string]bool{}
+	for _, d := range iso.Catalog() {
+		for _, img := range d.Images() {
+			key := flavorKey(img)
+			if listed[key] || leafSeen[key] {
+				continue
+			}
+			family, ok := familyAt[d.Family]
+			if !ok {
+				family = attach(-1, d.Family)
+				familyAt[d.Family] = family
+			}
+			identity := d.Family
+			parent := family
+			if d.Edition != "" {
+				identity += "|" + d.Edition
+				edition, ok := editionAt[identity]
+				if !ok {
+					edition = attach(parent, d.Edition)
+					editionAt[identity] = edition
+				}
+				parent = edition
+			}
+			if d.Flavor != "" {
+				identity += "|" + d.Flavor
+				flavor, ok := flavorAt[identity]
+				if !ok {
+					flavor = attach(parent, d.Flavor)
+					flavorAt[identity] = flavor
+				}
+				parent = flavor
+			}
+			leaf := attach(parent, img.Arch)
+			tree[leaf].arch, tree[leaf].image, tree[leaf].collapsed = img.Arch, img, false
+			leafSeen[key] = true
+		}
+	}
+	return tree
+}
+
+// visibleCatalog lists tree indexes in display order: pre-order with the
+// children of collapsed grouping levels hidden.
+func (m model) visibleCatalog() []int {
+	visible := []int{}
+	var walk func(idx int)
+	walk = func(idx int) {
+		visible = append(visible, idx)
+		if !m.tree[idx].collapsed {
+			for _, child := range m.tree[idx].children {
+				walk(child)
+			}
+		}
+	}
+	for idx, node := range m.tree {
+		if node.parent == -1 {
+			walk(idx)
+		}
+	}
+	return visible
+}
+
+// catalogPosition reverse-maps a tree index to its display position, or
+// false when the row is hidden.
+func (m model) catalogPosition(idx int) (int, bool) {
+	for pos, visible := range m.visibleCatalog() {
+		if visible == idx {
+			return pos, true
+		}
+	}
+	return 0, false
+}
+
+// treeRow maps the cursor to the tree node it points at, or -1 when the
+// list is empty or the cursor ranges past its end.
+func (m model) treeRow() int {
+	visible := m.visibleCatalog()
+	if m.treeCursor < 0 || m.treeCursor >= len(visible) {
+		return -1
+	}
+	return visible[m.treeCursor]
+}
+
+// treeDepth counts the grouping levels sitting above the node; families are
+// depth zero.
+func (m model) treeDepth(idx int) int {
+	depth := 0
+	for parent := m.tree[idx].parent; parent >= 0; parent = m.tree[parent].parent {
+		depth++
+	}
+	return depth
+}
+
+// levelCollapsed reports whether everything at the node's level — the node
+// and all its siblings — sits folded, the point where h climbs one level
+// instead of folding the level under the cursor.
+func (m model) levelCollapsed(idx int) bool {
+	if parent := m.tree[idx].parent; parent >= 0 {
+		for _, sibling := range m.tree[parent].children {
+			if sibling := m.tree[sibling]; len(sibling.children) > 0 && !sibling.collapsed {
+				return false // one of the siblings still shows something
+			}
+		}
+		return true
+	}
+	return m.tree[idx].collapsed // a family level is that level alone
+}
+
+// countLeaves totals the selectable downloads under the node and how many
+// of them are marked; grouping levels derive their mark from these numbers.
+func (m model) countLeaves(idx int) (total, selected int) {
+	node := m.tree[idx]
+	if node.arch != "" {
+		total++
+		if m.treeSel[flavorKey(node.image)] {
+			selected++
+		}
+		return
+	}
+	for _, child := range node.children {
+		childTotal, childSelected := m.countLeaves(child)
+		total += childTotal
+		selected += childSelected
+	}
+	return
+}
+
+// toggleSubtree flips everything under the node: an all-marked subtree
+// clears back to nothing, any other state marks every leaf below it.
+func (m *model) toggleSubtree(idx int) {
+	total, selected := m.countLeaves(idx)
+	if total == 0 {
+		return
+	}
+	m.markSubtree(idx, selected != total)
+}
+
+// markSubtree sets or clears the mark on every leaf under the node, whether
+// visible or hiding behind a collapsed grouping level.
+func (m *model) markSubtree(idx int, marked bool) {
+	node := m.tree[idx]
+	if node.arch != "" {
+		if marked {
+			m.treeSel[flavorKey(node.image)] = true
+		} else {
+			delete(m.treeSel, flavorKey(node.image))
+		}
+		return
+	}
+	for _, child := range node.children {
+		m.markSubtree(child, marked)
+	}
+}
+
+// checkedOrder implements the table ordering after an update check: queued
+// catalog additions stay on top so they remain in view until applied, then
+// ISOs with pending updates follow — freshest pending release first — then
+// the remainder by release age (dated before undated), unrecognized files
+// always trailing.
 func checkedOrder(a, b Update) bool {
+	if a.New != b.New {
+		return a.New
+	}
 	if a.pendingUpdate() != b.pendingUpdate() {
 		return a.pendingUpdate()
 	}
@@ -669,7 +882,7 @@ func (m model) View() string {
 	case m.applying:
 		return title + "\n\n" + m.progressView()
 	case m.mode == modeCatalog:
-		return title + "\n\n" + m.catalogView()
+		return title + "\n\n" + m.catalogView() + "\n\n" + m.hints()
 	}
 	lines := []string{title, ""}
 	if m.checking {
@@ -716,41 +929,29 @@ func (m model) hints() string {
 				rendered = append(rendered, s)
 			}
 		}
-		// The confirm/exit row hugs the right edge of the terminal.
-		if n := len(rendered); n > 0 && m.width > 0 {
-			rendered[n-1] = lipgloss.NewStyle().Width(m.width).
-				Align(lipgloss.Right).Render(rendered[n-1])
-		}
 		return strings.Join(rendered, "\n")
 	}
 
 	if m.mode == modeCatalog {
-		anySelectable, anyMarked := false, false
-		for _, u := range m.rows {
-			if selectable(u) {
-				anySelectable = true
-			}
-			if u.Selected {
-				anyMarked = true
-			}
-		}
 		var first, second []string
-		if len(m.rows) > 0 {
-			first = append(first, "↑/↓ select")
-			if anySelectable {
-				first = append(first, "space mark", "a all marks")
-			}
+		if len(m.tree) > 0 {
+			first = append(first, "↑/↓ move", "space toggle", "a all below", "←/→ fold")
 		}
 		second = append(second, "esc back")
-		var third []string
-		if anyMarked {
-			third = append(third, lipgloss.NewStyle().
-				Foreground(lipgloss.Color("42")).Render("enter download selection"))
+		var marked int
+		for _, on := range m.treeSel {
+			if on {
+				marked++
+			}
 		}
-		return footer(first, second, third)
+		if marked > 0 {
+			second = append(second, lipgloss.NewStyle().
+				Foreground(lipgloss.Color("42")).Render("enter add selected"))
+		}
+		return footer(first, second)
 	}
 
-	var selected, pending, deletable, catalogRows, checked, unrecognized, applied int
+	var selected, pending, deletable, checked, unrecognized, applied int
 	for _, u := range m.rows {
 		if u.Checked {
 			checked++
@@ -764,12 +965,10 @@ func (m model) hints() string {
 		if u.pendingUpdate() {
 			pending++
 		}
-		if u.Selected || u.DeleteISO {
+		if downloadable(u) || u.DeleteISO {
 			applied++
 		}
-		if u.New {
-			catalogRows++
-		} else {
+		if !u.New {
 			deletable++ // installed or unrecognized files can always go
 		}
 	}
@@ -780,15 +979,21 @@ func (m model) hints() string {
 	}
 	// The center hint follows the row under the cursor: rows without an
 	// available update — and unrecognized ISOs — cannot download anything,
-	// so space deletes them instead (with d) and the update hints stay
-	// silent; the delete hint then comes from this branch alone.
+	// so space removes them instead (with d) and the update hints stay
+	// silent; the removal hint then comes from this branch alone. Catalog
+	// additions are likewise removed — from the list, not the drive — and
+	// offer neither update nor delete.
 	cursorHintsDelete := false
 	if cursor := m.cursorRow(); cursor >= 0 {
 		u := m.rows[cursor]
-		if selectable(u) {
+		switch {
+		case u.New:
+			first = append(first, "space/d remove from list")
+			cursorHintsDelete = true
+		case selectable(u):
 			first = append(first, "space update")
-		} else {
-			first = append(first, "space/d delete ISO")
+		default:
+			first = append(first, "space/d remove ISO from drive")
 			cursorHintsDelete = true
 		}
 		if u.pendingUpdate() {
@@ -801,8 +1006,8 @@ func (m model) hints() string {
 	if pending > 0 {
 		first = append(first, "O keep all old")
 	}
-	if !cursorHintsDelete && (deletable > 0 || catalogRows > 0) {
-		first = append(first, "d delete ISO")
+	if !cursorHintsDelete && deletable > 0 {
+		first = append(first, "d remove ISO from drive")
 	}
 
 	if !m.checking { // the check is already running; its spinner says so
@@ -880,7 +1085,7 @@ func (m model) tableView() string {
 		lines = append(lines, headerStyle.Render(cell(header, widths[i])))
 	}
 	dim := lipgloss.NewStyle().Faint(true)
-	output := "  " + strings.Join(lines, "") + "\n"
+	output := "   " + strings.Join(lines, "") + "\n"
 	vis := m.visibleIndexes()
 	prevFamily := ""
 	for _, row := range vis {
@@ -915,10 +1120,15 @@ func (m model) rowView(index int, u Update) string {
 		deleteMark = "[x]"
 	}
 	if !selectable(u) {
-		// No update can be toggled here — unchecked, up to date, failed, or
-		// unrecognized — so the checkbox gives way to a grayed dash, offset
-		// with a leading space, aligned with the boxes above.
+		// No update can be toggled here — unchecked, up to date, failed,
+		// unrecognized, or a queued addition — so the checkbox gives way to a
+		// grayed dash, offset with a leading space, aligned with the boxes above.
 		update = " -"
+	}
+	if u.New {
+		// Additions have nothing on disk to delete: their Delete column is a
+		// placeholder too.
+		deleteMark = " -"
 	}
 	if unrecognized {
 		// There is no checkbox to toggle: a grayed dash, offset with a
@@ -950,18 +1160,19 @@ func (m model) rowView(index int, u Update) string {
 			available, color = "Unavailable", lipgloss.Color("196")
 		}
 	}
-	// A two-rune gutter shared by every row: the cursor indicator plus the
-	// new-row tag — or a filler space — so values align with the header.
+	// A three-rune gutter shared by every row: the cursor indicator, a space,
+	// and the new-row tag — or a filler space — so values align with the
+	// header. The space keeps the green plus off the cursor arrow.
 	indicator := " "
 	if index == m.cursor {
 		indicator = "›"
 	}
 	tag := " "
 	if u.New {
-		tag = lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("✚")
+		tag = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("+")
 	}
 	fields := []string{update, rowLabel(u), version, available, age, keep, deleteMark}
-	line := indicator + tag
+	line := indicator + " " + tag
 	dim := lipgloss.NewStyle().Faint(true)
 	for n, field := range fields {
 		// cell() also pads one space per side, so cap the visible text there.
@@ -1044,7 +1255,7 @@ func (m model) selectedView() string {
 	case u.Current.Family == "":
 		parts = append(parts, fmt.Sprintf("%s on disk", space.HumanBytes(u.CurrentSize)), "unrecognized, never updated")
 	case !u.Checked:
-		parts = append(parts, fmt.Sprintf("%s on disk", space.HumanBytes(u.CurrentSize)), "not checked — press c")
+		parts = append(parts, fmt.Sprintf("%s on disk", space.HumanBytes(u.CurrentSize)), "not checked")
 	default:
 		parts = append(parts, fmt.Sprintf("%s on disk", space.HumanBytes(u.CurrentSize)))
 		if u.Err != nil {
@@ -1062,26 +1273,61 @@ func (m model) selectedView() string {
 	return strings.Join(parts, " · ")
 }
 
-// catalogView renders the download-catalog multiselect list; distributions
-// the list already holds are filtered out at openCatalog time, so everything
-// shown is something the drive does not have.
+// catalogView renders the collapsible download tree: distribution families
+// lead the screen, their editions and flavors indent beneath, and the leaves
+// prompt for the architecture to take. Selection shows as ticks tinted
+// green — the chosen labels follow suit — with grouping levels half-covered
+// by their children wearing the half-selection tick; every expandable level
+// also carries a fold glyph.
 func (m model) catalogView() string {
 	header := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).
 		Render("Newest releases available for download")
-	if len(m.catalog) == 0 {
+	if len(m.tree) == 0 {
 		return header + "\n\n  Everything the catalog offers is already listed."
 	}
+	var marked int
+	for _, on := range m.treeSel {
+		if on {
+			marked++
+		}
+	}
+	if marked > 0 {
+		markStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("42"))
+		header += "  " + markStyle.Render(fmt.Sprintf("✓ %d marked", marked))
+	}
+	green := lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
+	amber := lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	dim := lipgloss.NewStyle().Faint(true)
 	var lines []string
-	for i, entry := range m.catalog {
-		mark := "[ ]"
-		if m.catalogSel[i] {
-			mark = "[x]"
+	for pos, idx := range m.visibleCatalog() {
+		node := m.tree[idx]
+		gutter := "  "
+		if pos == m.treeCursor {
+			gutter = "› "
 		}
-		prefix := "  "
-		if i == m.catalogCursor {
-			prefix = "› "
+		indent := strings.Repeat("  ", m.treeDepth(idx))
+		fold := "  "
+		if len(node.children) > 0 {
+			fold = dim.Render("▾ ")
+			if node.collapsed {
+				fold = dim.Render("▸ ")
+			}
 		}
-		lines = append(lines, fmt.Sprintf("%s%s  %s", prefix, mark, flavorLabel(entry)))
+		total, selected := m.countLeaves(idx)
+		label := node.label
+		var mark string
+		switch {
+		case selected == total:
+			mark = green.Render("✓")
+			label = green.Render(label)
+		case selected > 0:
+			mark = amber.Render("◐")
+		}
+		if node.arch != "" && selected == 0 {
+			// Unmarked arch leaves fade so the ticks carry the scan.
+			label = dim.Render(label)
+		}
+		lines = append(lines, gutter+indent+fold+mark+" "+label)
 	}
 	return header + "\n\n" + strings.Join(lines, "\n")
 }

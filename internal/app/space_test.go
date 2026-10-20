@@ -42,8 +42,8 @@ func TestSpaceEffect(t *testing.T) {
 	}
 }
 
-// TestSelectableGuardsRows verifies that unrecognized and up-to-date rows
-// never offer an update toggle.
+// TestSelectableGuardsRows verifies that unrecognized, up-to-date, and queued
+// catalog rows never offer an update toggle.
 func TestSelectable(t *testing.T) {
 	updateRow := Update{Current: iso.Image{Family: "Ubuntu", Filename: "ubuntu-24.04.iso"}, Latest: source.Candidate{Image: iso.Image{Filename: "ubuntu-26.04.iso"}}}
 	upToDate := updateRow
@@ -58,8 +58,8 @@ func TestSelectable(t *testing.T) {
 	if selectable(unrecognized) {
 		t.Error("unrecognized ISO should not be selectable")
 	}
-	if !selectable(Update{New: true, Latest: source.Candidate{Image: iso.Image{Filename: "tails.iso"}}}) {
-		t.Error("resolved catalog row should be selectable")
+	if selectable(Update{New: true, Latest: source.Candidate{Image: iso.Image{Filename: "tails.iso"}}}) {
+		t.Error("queued catalog addition should not offer an update toggle")
 	}
 }
 
@@ -117,10 +117,10 @@ func TestKeepFlagRendersForPendingRowsOnly(t *testing.T) {
 }
 
 // keepCell extracts the Keep column's visible text from a rendered row: the
-// two-rune cursor gutter comes first, then the table columns, and cell()
+// three-rune cursor gutter comes first, then the table columns, and cell()
 // pads one space per side.
 func keepCell(row string) string {
-	start := 2 + widths[0] + widths[1] + widths[2] + widths[3] + widths[4]
+	start := 3 + widths[0] + widths[1] + widths[2] + widths[3] + widths[4]
 	runes := []rune(row)
 	return strings.TrimSpace(string(runes[start : start+widths[5]]))
 }
@@ -197,7 +197,7 @@ func TestLongFilenameTruncatesToFit(t *testing.T) {
 		t.Fatal("row view spans multiple lines")
 	}
 	plain := stripANSI(row)
-	total := 2 // the row gutter (cursor indicator plus tag-or-filler)
+	total := 3 // the row gutter (cursor indicator, space, tag-or-filler)
 	for _, w := range widths {
 		total += w
 	}
@@ -289,9 +289,9 @@ func TestEmptyDriveStillOpensUI(t *testing.T) {
 	}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
 	mm := updated.(model)
-	if mm.mode != modeCatalog || len(mm.catalog) == 0 {
-		t.Errorf("pressing n on an empty drive: mode %v with %d catalog entries",
-			mm.mode, len(mm.catalog))
+	if mm.mode != modeCatalog || len(mm.tree) == 0 {
+		t.Errorf("pressing n on an empty drive: mode %v with %d catalog rows",
+			mm.mode, len(mm.tree))
 	}
 }
 
@@ -304,13 +304,15 @@ func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
 	if mm.mode != modeCatalog {
 		t.Fatalf("pressing n did not open the catalog (mode %v)", mm.mode)
 	}
-	for _, entry := range mm.catalog {
-		if entry.Family == "Ubuntu" && entry.Arch == "amd64" {
-			t.Errorf("Ubuntu amd64 listed although the drive holds it (%v)", mm.catalog)
+	var leaves int
+	for _, node := range mm.tree {
+		if node.arch == "" {
+			continue
 		}
-	}
-	if len(mm.catalog) == 0 || mm.catalog[0].Family != "Ubuntu" || mm.catalog[0].Arch != "arm64" {
-		t.Errorf("first offer = %+v, want Ubuntu arm64", mm.catalog)
+		leaves++
+		if node.image.Family == "Ubuntu" && node.image.Arch == "amd64" {
+			t.Errorf("Ubuntu amd64 offered although the drive holds it (%+v)", node.image)
+		}
 	}
 	// Every catalog image except the installed Ubuntu amd64 one is offered.
 	offers := 0
@@ -318,8 +320,8 @@ func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
 		offers += len(entry.Images())
 	}
 	offers-- // Ubuntu amd64 is already on the drive
-	if len(mm.catalog) != offers {
-		t.Errorf("len(offers) = %d, want %d", len(mm.catalog), offers)
+	if leaves != offers {
+		t.Errorf("leaf count = %d, want %d", leaves, offers)
 	}
 }
 
@@ -327,11 +329,32 @@ func TestOpenCatalogSkipsListedDistributions(t *testing.T) {
 // nothing-left message instead of an empty selection screen.
 func TestOpenCatalogEmptyView(t *testing.T) {
 	m := model{
-		mode:    modeCatalog,
-		catalog: []iso.Image{},
+		mode: modeCatalog,
+		tree: []catalogNode{},
 	}
 	if got := m.catalogView(); !strings.Contains(got, "already listed") {
 		t.Errorf("catalogView = %q, want the exhausted-catalog message", got)
+	}
+}
+
+// TestCatalogHintsPutAddSelectedOnTheSecondLine verifies the download screen
+// announces the enter action as "add selected" on the second footer line.
+func TestCatalogHintsPutAddSelectedOnTheSecondLine(t *testing.T) {
+	m := model{
+		mode:    modeCatalog,
+		tree:    []catalogNode{{image: iso.Image{Family: "Ubuntu", Arch: "amd64"}}},
+		treeSel: map[string]bool{"ubuntu/amd64": true},
+	}
+	plain := stripANSI(m.hints())
+	if strings.Contains(plain, "download") {
+		t.Errorf("catalog hints still mention downloading: %q", plain)
+	}
+	lines := strings.Split(plain, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("catalog hints render %d lines, want two: %q", len(lines), plain)
+	}
+	if !strings.Contains(lines[1], "esc back") || !strings.Contains(lines[1], "enter add selected") {
+		t.Errorf("second catalog line = %q, want esc back and enter add selected", lines[1])
 	}
 }
 
@@ -358,9 +381,9 @@ func TestUncheckedRowsCarryAQuestionMark(t *testing.T) {
 }
 
 // availableCell extracts the Available column's visible text from a rendered
-// row: columns run after the two-rune cursor gutter.
+// row: columns run after the three-rune cursor gutter.
 func availableCell(row string) string {
-	start := 2 + widths[0] + widths[1] + widths[2]
+	start := 3 + widths[0] + widths[1] + widths[2]
 	runes := []rune(row)
 	return strings.TrimSpace(string(runes[start : start+widths[3]]))
 }
@@ -440,7 +463,7 @@ func TestUnrecognizedRowsRenderAlignedDashes(t *testing.T) {
 
 	// The Update cell's dash must land exactly where a box's interior sits.
 	row := stripANSI(m.rowView(0, m.rows[0]))
-	updateStart := 2
+	updateStart := 3
 	if got := dashAt(row, updateStart); got != '-' {
 		t.Errorf("unrecognized Update cell dash = %q, want one inside the box zone", got)
 	}
@@ -496,8 +519,8 @@ func TestVimMovementAndSelectionNaming(t *testing.T) {
 }
 
 // TestUpdateAllSelectsEveryPendingUpdate verifies a selects every selectable
-// update — including queued catalog downloads — without starting the batch,
-// without touching plain rows, and without dropping unrelated delete marks.
+// update without starting the batch, without touching plain or catalog rows,
+// and without dropping unrelated delete marks.
 func TestUpdateAllSelectsEveryPendingUpdate(t *testing.T) {
 	m := model{space: space.Space{Total: 100 << 30, Free: 50 << 30}, rows: []Update{
 		{Current: iso.Image{Family: "Ubuntu", Filename: "a.iso"}, Checked: true,
@@ -508,11 +531,14 @@ func TestUpdateAllSelectsEveryPendingUpdate(t *testing.T) {
 	}}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	mm := updated.(model)
-	if !mm.rows[0].Selected || !mm.rows[2].Selected {
-		t.Errorf("update-all did not mark the pending and catalog rows: %+v", mm.rows)
+	if !mm.rows[0].Selected {
+		t.Errorf("update-all did not mark the pending row: %+v", mm.rows)
 	}
 	if mm.rows[1].Selected {
 		t.Error("unrecognized row got selected by update-all")
+	}
+	if mm.rows[2].Selected {
+		t.Error("update-all touched a catalog addition, which is queued on its own")
 	}
 	if mm.applying {
 		t.Error("update-all started applying instead of waiting for enter")
@@ -697,7 +723,7 @@ func TestUpdateCheckboxOnlyWhenUpdatable(t *testing.T) {
 			t.Errorf("row %d Update cell = %q, want %q", i, got, want)
 		}
 		if want == "-" {
-			if got := dashAt(row, 2); got != '-' {
+			if got := dashAt(row, 3); got != '-' {
 				t.Errorf("row %d dash not aligned with the box zone: %q", i, row)
 			}
 		}
@@ -710,16 +736,17 @@ func TestUpdateCheckboxOnlyWhenUpdatable(t *testing.T) {
 }
 
 // updateCell extracts the Update column's visible text from a rendered row:
-// columns begin after the two-rune cursor gutter.
+// columns begin after the three-rune cursor gutter.
 func updateCell(row string) string {
 	runes := []rune(row)
-	return strings.TrimSpace(string(runes[2 : 2+widths[0]]))
+	return strings.TrimSpace(string(runes[3 : 3+widths[0]]))
 }
 
-// TestCheckedOrderSortsPendingFirstByAge verifies the post-check ordering:
-// pending updates lead with the freshest release on top, then the remainder
-// by age (undated rows sink), and unrecognized files stay last.
-func TestCheckedOrderSortsPendingFirstByAge(t *testing.T) {
+// TestCheckedOrderKeepsAdditionsOnTop verifies the post-check ordering:
+// queued catalog additions stay on top, pending updates follow with the
+// freshest release first, then the remainder by age (undated rows sink), and
+// unrecognized files stay last.
+func TestCheckedOrderKeepsAdditionsOnTop(t *testing.T) {
 	unrecognized := Update{Current: iso.Image{Filename: "backup.iso"}}
 	fedora := Update{Current: iso.Image{Family: "Fedora", Version: "44", Filename: "f.iso"}} // never checked
 	ubuntu := Update{
@@ -757,7 +784,7 @@ func TestCheckedOrderSortsPendingFirstByAge(t *testing.T) {
 	m := model{rows: []Update{debian, unrecognized, ubuntu, fedora, tails, arch}}
 	m.rebuildRows()
 
-	want := []string{"Arch Linux", "Ubuntu", "Tails", "Debian", "Fedora", "backup.iso"}
+	want := []string{"Tails", "Arch Linux", "Ubuntu", "Debian", "Fedora", "backup.iso"}
 	for i, label := range want {
 		row := m.rows[i]
 		got := row.Current.Family
@@ -785,7 +812,7 @@ func TestHintsAdaptToState(t *testing.T) {
 	plain := strings.Join(strings.SplitN(stripANSI(raw), "\n", 999), "\n")
 
 	first := strings.SplitN(plain, "\n", 2)[0]
-	if !strings.Contains(first, "↑/↓ selection") || !strings.Contains(first, "d delete ISO") {
+	if !strings.Contains(first, "↑/↓ selection") || !strings.Contains(first, "d remove ISO from drive") {
 		t.Errorf("first line should carry movement and deletion, got %q", first)
 	}
 	for _, absent := range []string{"space update", "a update all", "o keep old version", "O keep all old", "enter apply"} {
@@ -849,8 +876,7 @@ func TestHintsAdaptToState(t *testing.T) {
 	if !strings.Contains(hints, "\x1b[38;5;196mq quit") {
 		t.Error("q quit must be red")
 	}
-	// The confirm row reads apply • quit, in that order and right-aligned
-	// once the terminal width is known.
+	// The confirm row reads apply • quit, in that order and left-aligned.
 	third = strings.SplitN(stripANSI(hints), "\n", 3)[2]
 	if !strings.HasPrefix(third, "enter apply • q quit") {
 		t.Errorf("third confirm/exit line = %q, want enter apply first, then q quit", third)
@@ -859,11 +885,8 @@ func TestHintsAdaptToState(t *testing.T) {
 	m.width = 80
 	confirm := strings.Split(strings.TrimRight(stripANSI(m.hints()), " "), "\n")
 	last := confirm[len(confirm)-1]
-	if got := len([]rune(last)); got != 80 {
-		t.Errorf("right-aligned confirm row width = %d, want 80", got)
-	}
-	if !strings.HasSuffix(last, "q quit") {
-		t.Errorf("right-aligned confirm row = %q, want q quit at the right edge", last)
+	if last != "enter apply • q quit" {
+		t.Errorf("left-aligned confirm row = %q, want it flush left", last)
 	}
 }
 
@@ -904,6 +927,89 @@ func TestCheckCursorSnapsToTopForRecognizedRows(t *testing.T) {
 	}
 }
 
+// TestCatalogAdditionsCountTowardProjection verifies a queued catalog row
+// carries its download size into the projected usage bar.
+func TestCatalogAdditionsCountTowardProjection(t *testing.T) {
+	m := model{rows: []Update{{
+		New: true, Selected: true, Checked: true,
+		Current:    iso.Image{Family: "Tails"},
+		LatestSize: 2 << 30,
+		Latest: source.Candidate{
+			Image: iso.Image{Family: "Tails", Version: "7.6", Filename: "tails.iso"},
+			Size:  2 << 30,
+		},
+	}}}
+	add, freed := spaceEffect(m.rows)
+	if add != 2<<30 || freed != 0 {
+		t.Errorf("spaceEffect = (%d, %d), want (2GiB, 0) for a queued addition", add, freed)
+	}
+}
+
+// TestCatalogAdditionsOfferNoUpdateOrDelete verifies to-be-added rows show
+// placeholders in the Update and Delete columns, carry a green plus tag, and
+// only advertise their removal from the list.
+func TestCatalogAdditionsOfferNoUpdateOrDelete(t *testing.T) {
+	original := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256) // under go test colors are off
+	defer lipgloss.SetColorProfile(original)
+
+	m := model{rows: []Update{{
+		New: true, Selected: true, Checked: true,
+		Current:    iso.Image{Family: "Tails"},
+		LatestSize: 2 << 30,
+		Latest: source.Candidate{
+			Image: iso.Image{Family: "Tails", Version: "7.6", Filename: "tails.iso"},
+			Size:  2 << 30,
+		},
+	}}}
+	raw := m.rowView(0, m.rows[0])
+	if !strings.Contains(raw, "\x1b[38;5;42m+") {
+		t.Errorf("catalog addition tag = %q, want a green plus", raw)
+	}
+	if strings.Contains(raw, "✚") || strings.Contains(raw, "\x1b[38;5;220m") {
+		t.Errorf("catalog addition tag = %q, want no unicode plus or yellow", raw)
+	}
+	row := stripANSI(raw)
+	if got := updateCell(row); got != "-" {
+		t.Errorf("catalog addition Update cell = %q, want a placeholder", got)
+	}
+	if got := deleteCell(row); got != "-" {
+		t.Errorf("catalog addition Delete cell = %q, want a placeholder", got)
+	}
+
+	plain := stripANSI(m.hints())
+	if !strings.Contains(plain, "space/d remove from list") {
+		t.Errorf("catalog addition hints = %q, want the removal hint", plain)
+	}
+	if strings.Contains(plain, "space update") || strings.Contains(plain, "delete") {
+		t.Errorf("catalog addition hints = %q, want no update or delete option", plain)
+	}
+}
+
+// TestSpaceDropsQueuedCatalogRow verifies space removes a to-be-added row
+// instead of toggling an update mark.
+func TestSpaceDropsQueuedCatalogRow(t *testing.T) {
+	m := model{rows: []Update{
+		{New: true, Selected: true, Current: iso.Image{Family: "Tails"}},
+		{Current: iso.Image{Family: "Ubuntu", Filename: "a.iso"}},
+	}}
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	mm := updated.(model)
+	if len(mm.rows) != 1 || mm.rows[0].New {
+		t.Errorf("space left rows %+v, want the queued addition dropped", mm.rows)
+	}
+}
+
+// deleteCell extracts the Delete column's visible text from a rendered row.
+func deleteCell(row string) string {
+	start := 3
+	for _, w := range widths[:6] {
+		start += w
+	}
+	runes := []rune(row)
+	return strings.TrimSpace(string(runes[start : start+widths[6]]))
+}
+
 // TestSpaceDeletesWithoutPendingUpdate verifies space doubles as delete when
 // the cursor row offers no update — an up-to-date ISO here — and the hint
 // line stops advertising updates while it does so.
@@ -922,8 +1028,8 @@ func TestSpaceDeletesWithoutPendingUpdate(t *testing.T) {
 	}
 
 	plain := stripANSI(mm.hints())
-	if !strings.Contains(plain, "space/d delete ISO") {
-		t.Errorf("hint line should advertise space as delete: %q", plain)
+	if !strings.Contains(plain, "space/d remove ISO from drive") {
+		t.Errorf("hint line should advertise space as removal: %q", plain)
 	}
 	if strings.Contains(plain, "space update") || strings.Contains(plain, "o keep old version") {
 		t.Error("update hints leaked into a row without an available update")

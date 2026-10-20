@@ -317,7 +317,7 @@ func apply(ctx context.Context, ventoyDir, root string, rows []Update, progress 
 			}
 			continue
 		}
-		if !u.Selected || u.Err != nil || u.Latest.Image.Filename == "" {
+		if !downloadable(u) {
 			continue
 		}
 		var target string

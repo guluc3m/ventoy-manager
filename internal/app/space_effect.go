@@ -20,7 +20,7 @@ func spaceEffect(updates []Update) (add, freed int64) {
 			freed += u.CurrentSize
 			continue
 		}
-		if !u.Selected || u.Err != nil || u.Latest.Image.Filename == "" {
+		if !downloadable(u) {
 			continue
 		}
 		add += u.LatestSize
